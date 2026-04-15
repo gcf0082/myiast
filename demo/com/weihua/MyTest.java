@@ -6,7 +6,7 @@ public class MyTest {
     public static void main(String[] args) {
         File file = new File("/tmp/file.txt");
         int count = 0;
-        while (count < 5) {
+        while (count < 30) {
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {

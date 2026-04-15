@@ -4,12 +4,16 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.dynamic.ClassFileLocator;
+import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
 
+import java.io.File;
 import java.lang.instrument.Instrumentation;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.jar.JarFile;
 
 public class IastAgent {
     public static final AtomicInteger globalCallCount = new AtomicInteger(0);
@@ -35,10 +39,37 @@ public class IastAgent {
      */
     private static void startAgent(String agentArgs, Instrumentation inst) {
         System.out.println("[IAST Agent] Java version: " + System.getProperty("java.version"));
-        
+
+        // 定位Agent jar路径并添加到bootstrap classpath
+        File agentJarFile = findAgentJar();
+        if (agentJarFile != null) {
+            try {
+                inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJarFile));
+                System.out.println("[IAST Agent] Appended agent jar to bootstrap classpath: " + agentJarFile.getAbsolutePath());
+            } catch (Exception e) {
+                System.err.println("[IAST Agent] Warning: Failed to append to bootstrap classpath: " + e.getMessage());
+            }
+        }
+
         // 初始化配置，支持agent参数指定配置文件路径
         MonitorConfig.init(agentArgs);
-        
+
+        // 创建ClassFileLocator，确保ByteBuddy能找到Advice类的字节码
+        ClassFileLocator locator;
+        try {
+            if (agentJarFile != null) {
+                locator = new ClassFileLocator.Compound(
+                        ClassFileLocator.ForJarFile.of(agentJarFile),
+                        ClassFileLocator.ForClassLoader.ofSystemLoader()
+                );
+            } else {
+                locator = ClassFileLocator.ForClassLoader.ofSystemLoader();
+            }
+        } catch (Exception e) {
+            locator = ClassFileLocator.ForClassLoader.ofSystemLoader();
+        }
+        final ClassFileLocator adviceLocator = locator;
+
         // 构建ByteBuddy Agent
         AgentBuilder agentBuilder = new AgentBuilder.Default()
                 .ignore(ElementMatchers.nameStartsWith("net.bytebuddy."))
@@ -46,7 +77,22 @@ public class IastAgent {
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
                 .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
                 .with(AgentBuilder.TypeStrategy.Default.REDEFINE)
-                .disableClassFormatChanges();
+                .disableClassFormatChanges()
+                .with(new AgentBuilder.Listener.Adapter() {
+                    @Override
+                    public void onTransformation(TypeDescription typeDescription, ClassLoader classLoader,
+                                                 net.bytebuddy.utility.JavaModule module,
+                                                 boolean loaded, net.bytebuddy.dynamic.DynamicType dynamicType) {
+                        System.out.println("[IAST Agent] Transformed: " + typeDescription.getName() + " (loaded=" + loaded + ")");
+                    }
+
+                    @Override
+                    public void onError(String typeName, ClassLoader classLoader,
+                                        net.bytebuddy.utility.JavaModule module,
+                                        boolean loaded, Throwable throwable) {
+                        System.err.println("[IAST Agent] Error transforming " + typeName + ": " + throwable.getMessage());
+                    }
+                });
 
         // 为每个监控类添加规则
         List<String> monitoredClasses = MonitorConfig.getMonitoredClasses();
@@ -68,7 +114,7 @@ public class IastAgent {
             agentBuilder = agentBuilder
                     .type(typeMatcher)
                     .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
-                            builder.visit(Advice.to(MethodMonitorAdvice.class).on(finalMethodMatcher))
+                            builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(finalMethodMatcher))
                     );
         }
 
@@ -76,6 +122,35 @@ public class IastAgent {
         agentBuilder.installOn(inst);
             
         System.out.println("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
+    }
+
+    /**
+     * 定位Agent jar文件路径
+     */
+    private static File findAgentJar() {
+        try {
+            String classResourcePath = IastAgent.class.getName().replace('.', '/') + ".class";
+            ClassLoader cl = IastAgent.class.getClassLoader();
+            java.net.URL resourceUrl = (cl != null) ? cl.getResource(classResourcePath)
+                    : ClassLoader.getSystemResource(classResourcePath);
+            if (resourceUrl != null) {
+                String url = resourceUrl.toString();
+                if (url.startsWith("jar:file:")) {
+                    String jarPath = url.substring("jar:file:".length(), url.indexOf("!"));
+                    File f = new File(jarPath);
+                    if (f.exists()) return f;
+                }
+            }
+            // 备选：通过CodeSource获取
+            java.security.CodeSource cs = IastAgent.class.getProtectionDomain().getCodeSource();
+            if (cs != null && cs.getLocation() != null) {
+                File f = new File(cs.getLocation().toURI());
+                if (f.exists() && f.getName().endsWith(".jar")) return f;
+            }
+        } catch (Exception e) {
+            System.err.println("[IAST Agent] Warning: Could not locate agent jar: " + e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -98,7 +173,7 @@ public class IastAgent {
 
         @Advice.OnMethodExit(onThrowable = Throwable.class)
         public static void onExit(@Advice.Enter int callId,
-                                  @Advice.Return Object result,
+                                  @Advice.Return(readOnly = true, typing = Assigner.Typing.DYNAMIC) Object result,
                                   @Advice.Thrown Throwable throwable) {
             if (throwable != null) {
                 System.out.println("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
