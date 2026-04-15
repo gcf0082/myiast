@@ -29,15 +29,35 @@ monitor.java.net.Socket = connect#(Ljava/net/SocketAddress;I)V
 monitor.java.util.ArrayList = add#(Ljava/lang/Object;)Z
 ```
 
-### 3. 启动应用
+### 3. 两种使用模式
+
+#### 模式一：Pre-agent模式（JVM启动时挂载）
 ```bash
 java -javaagent:/path/to/iast-agent.jar -jar your-application.jar
 ```
-
-#### 自定义配置文件路径
+自定义配置文件路径：
 ```bash
 java -javaagent:/path/to/iast-agent.jar=config=/path/to/custom-config.properties -jar your-application.jar
 ```
+
+#### 模式二：Attach模式（动态挂载到运行中的JVM）
+无需重启目标应用，直接挂载到正在运行的JVM进程：
+```bash
+# 1. 先获取目标进程PID
+jps -l
+
+# 2. 挂载Agent
+java -jar iast-agent.jar <目标进程PID>
+
+# 自定义配置文件路径
+java -jar iast-agent.jar <目标进程PID> config=/path/to/custom-config.properties
+```
+
+**Attach模式注意事项：**
+- 目标JVM不能开启`-XX:+DisableAttachMechanism`启动参数
+- 运行挂载工具的用户需要与目标进程用户权限一致
+- JDK大版本需要与目标JVM保持一致
+- 配置文件需要是目标进程可访问的绝对路径
 
 ## 方法描述符说明
 | Java方法声明 | 描述符 |

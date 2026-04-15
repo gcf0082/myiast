@@ -16,8 +16,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class IastAgent {
     private static final AtomicInteger globalCallCount = new AtomicInteger(0);
 
+    /**
+     * Pre-agent模式入口：JVM启动时挂载
+     */
     public static void premain(String agentArgs, Instrumentation inst) {
-        System.out.println("[IAST Agent] Starting IAST Agent...");
+        System.out.println("[IAST Agent] Starting IAST Agent in pre-agent mode...");
+        startAgent(agentArgs, inst);
+    }
+
+    /**
+     * Attach模式入口：动态挂载到运行中的JVM
+     */
+    public static void agentmain(String agentArgs, Instrumentation inst) {
+        System.out.println("[IAST Agent] Starting IAST Agent in attach mode...");
+        startAgent(agentArgs, inst);
+    }
+
+    /**
+     * 公共Agent启动逻辑，供两种模式复用
+     */
+    private static void startAgent(String agentArgs, Instrumentation inst) {
         System.out.println("[IAST Agent] Java version: " + System.getProperty("java.version"));
         
         // 初始化配置，支持agent参数指定配置文件路径
@@ -99,7 +117,7 @@ public class IastAgent {
                 inst.retransformClasses(clazz);
                 System.out.println("[IAST Agent] Successfully retransformed class: " + internalClassName.replace('/', '.'));
             } catch (Exception e) {
-                System.err.println("[IAST Agent] Failed to retransform class " + internalClassName.replace('/', '.') + ": " + e.getMessage());
+                System.err.println("[IAST Agent] Failed to retransform class " + internalClassName.replace('/', '.'));
                 e.printStackTrace();
             }
         }
