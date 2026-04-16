@@ -99,23 +99,57 @@ public class IastAgent {
         for (String internalClassName : monitoredClasses) {
             String className = internalClassName.replace('/', '.');
             List<MonitorConfig.MethodRule> methodRules = MonitorConfig.getMethodRules(internalClassName);
-            
-            ElementMatcher.Junction<TypeDescription> typeMatcher = ElementMatchers.named(className);
-            ElementMatcher.Junction<MethodDescription> methodMatcher = ElementMatchers.none();
-            for (MonitorConfig.MethodRule rule : methodRules) {
-                methodMatcher = methodMatcher.or(
-                        ElementMatchers.named(rule.getMethodName())
-                                .and(ElementMatchers.hasDescriptor(rule.getDescriptor()))
-                );
-                System.out.println("[IAST Agent] Adding monitor to method: " + className + "." + rule.getMethodName() + rule.getDescriptor());
-            }
-            final ElementMatcher.Junction<MethodDescription> finalMethodMatcher = methodMatcher;
 
-            agentBuilder = agentBuilder
-                    .type(typeMatcher)
-                    .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
-                            builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(finalMethodMatcher))
-                    );
+            ElementMatcher.Junction<TypeDescription> typeMatcher = ElementMatchers.named(className);
+
+            // 分离构造函数规则和普通方法规则
+            ElementMatcher.Junction<MethodDescription> ctorMatcher = null;
+            ElementMatcher.Junction<MethodDescription> methodMatcher = null;
+
+            for (MonitorConfig.MethodRule rule : methodRules) {
+                if ("<init>".equals(rule.getMethodName())) {
+                    // 构造函数匹配
+                    ElementMatcher.Junction<MethodDescription> m;
+                    if (rule.isWildcardDescriptor()) {
+                        m = ElementMatchers.isConstructor();
+                    } else {
+                        m = ElementMatchers.isConstructor()
+                                .and(ElementMatchers.hasDescriptor(rule.getDescriptor()));
+                    }
+                    ctorMatcher = (ctorMatcher == null) ? m : ctorMatcher.or(m);
+                } else {
+                    // 普通方法匹配
+                    ElementMatcher.Junction<MethodDescription> m;
+                    if (rule.isWildcardDescriptor()) {
+                        m = ElementMatchers.named(rule.getMethodName());
+                    } else {
+                        m = ElementMatchers.named(rule.getMethodName())
+                                .and(ElementMatchers.hasDescriptor(rule.getDescriptor()));
+                    }
+                    methodMatcher = (methodMatcher == null) ? m : methodMatcher.or(m);
+                }
+                System.out.println("[IAST Agent] Adding monitor: " + className + "." + rule.getMethodName() + "#" + rule.getDescriptor());
+            }
+
+            // 应用普通方法Advice
+            if (methodMatcher != null) {
+                final ElementMatcher.Junction<MethodDescription> fm = methodMatcher;
+                agentBuilder = agentBuilder
+                        .type(typeMatcher)
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                                builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(fm))
+                        );
+            }
+
+            // 应用构造函数Advice
+            if (ctorMatcher != null) {
+                final ElementMatcher.Junction<MethodDescription> fc = ctorMatcher;
+                agentBuilder = agentBuilder
+                        .type(typeMatcher)
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                                builder.visit(Advice.to(ConstructorMonitorAdvice.class, adviceLocator).on(fc))
+                        );
+            }
         }
 
         // 安装Agent
@@ -158,15 +192,35 @@ public class IastAgent {
      */
     public static class MethodMonitorAdvice {
         @Advice.OnMethodEnter
-        public static int onEnter(@Advice.Origin("#m#d") String fullMethodName) {
+        public static int onEnter(
+                @Advice.Origin("#t.#m#s") String fullMethodName,
+                @Advice.This(optional = true, typing = Assigner.Typing.DYNAMIC) Object self,
+                @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
             int callId = globalCallCount.incrementAndGet();
             System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call ===");
             System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
-            
-            // 打印调用栈（跳过前2层：本方法和调用点）
-            StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-            if (stackTrace.length > 2) {
-                System.out.println("[IAST Agent] [" + callId + "] Caller: " + stackTrace[2]);
+
+            if (self != null) {
+                System.out.println("[IAST Agent] [" + callId + "] this: " + self);
+            }
+
+            if (MonitorConfig.isOutputArgs()) {
+                if (args == null || args.length == 0) {
+                    System.out.println("[IAST Agent] [" + callId + "] Args: (none)");
+                } else {
+                    for (int i = 0; i < args.length; i++) {
+                        System.out.println("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
+                    }
+                }
+            }
+
+            if (MonitorConfig.isOutputStacktrace()) {
+                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+                int depth = MonitorConfig.getStacktraceDepth();
+                int end = Math.min(stackTrace.length, 2 + depth);
+                for (int i = 2; i < end; i++) {
+                    System.out.println("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
+                }
             }
             return callId;
         }
@@ -175,14 +229,61 @@ public class IastAgent {
         public static void onExit(@Advice.Enter int callId,
                                   @Advice.Return(readOnly = true, typing = Assigner.Typing.DYNAMIC) Object result,
                                   @Advice.Thrown Throwable throwable) {
-            if (throwable != null) {
-                System.out.println("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
-            } else {
-                if (result == null) {
-                    System.out.println("[IAST Agent] [" + callId + "] Returned: void/null");
+            if (MonitorConfig.isOutputReturn()) {
+                if (throwable != null) {
+                    System.out.println("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
                 } else {
-                    System.out.println("[IAST Agent] [" + callId + "] Returned: " + result);
+                    if (result == null) {
+                        System.out.println("[IAST Agent] [" + callId + "] Returned: void/null");
+                    } else {
+                        System.out.println("[IAST Agent] [" + callId + "] Returned: " + result);
+                    }
                 }
+            }
+            System.out.println("[IAST Agent] [" + callId + "] ========================================");
+        }
+    }
+
+    /**
+     * 构造函数监控Advice
+     * 与MethodMonitorAdvice的区别：onEnter不能访问this（对象尚未构造），onExit无返回值
+     */
+    public static class ConstructorMonitorAdvice {
+        @Advice.OnMethodEnter
+        public static int onEnter(
+                @Advice.Origin("#t.<init>#s") String fullMethodName,
+                @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
+            int callId = globalCallCount.incrementAndGet();
+            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call ===");
+            System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
+
+            if (MonitorConfig.isOutputArgs()) {
+                if (args == null || args.length == 0) {
+                    System.out.println("[IAST Agent] [" + callId + "] Args: (none)");
+                } else {
+                    for (int i = 0; i < args.length; i++) {
+                        System.out.println("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
+                    }
+                }
+            }
+
+            if (MonitorConfig.isOutputStacktrace()) {
+                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+                int depth = MonitorConfig.getStacktraceDepth();
+                int end = Math.min(stackTrace.length, 2 + depth);
+                for (int i = 2; i < end; i++) {
+                    System.out.println("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
+                }
+            }
+            return callId;
+        }
+
+        @Advice.OnMethodExit
+        public static void onExit(
+                @Advice.Enter int callId,
+                @Advice.This(typing = Assigner.Typing.DYNAMIC) Object self) {
+            if (self != null) {
+                System.out.println("[IAST Agent] [" + callId + "] Constructed: " + self);
             }
             System.out.println("[IAST Agent] [" + callId + "] ========================================");
         }

@@ -19,6 +19,12 @@ public class MonitorConfig {
     private static final String DEFAULT_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_CONFIG_PATH;
 
+    // 输出控制选项
+    private static boolean outputArgs = true;
+    private static boolean outputReturn = true;
+    private static boolean outputStacktrace = true;
+    private static int stacktraceDepth = 8;
+
     static {
         // 默认兜底配置
         addDefaultRule();
@@ -57,7 +63,13 @@ public class MonitorConfig {
             props.load(is);
             
             monitorRules.clear();
-            
+
+            // 解析输出控制选项
+            outputArgs = getBooleanProperty(props, "output.args", true);
+            outputReturn = getBooleanProperty(props, "output.return", true);
+            outputStacktrace = getBooleanProperty(props, "output.stacktrace", true);
+            stacktraceDepth = getIntProperty(props, "output.stacktrace.depth", 8);
+
             for (Map.Entry<Object, Object> entry : props.entrySet()) {
                 String key = entry.getKey().toString().trim();
                 String value = entry.getValue().toString().trim();
@@ -145,9 +157,11 @@ public class MonitorConfig {
     public static class MethodRule {
         private final String methodName;
         private final String descriptor;
+        private final boolean wildcardDescriptor;
 
         public MethodRule(String methodName, String descriptor) {
             this.methodName = methodName;
+            this.wildcardDescriptor = "*".equals(descriptor);
             this.descriptor = descriptor;
         }
 
@@ -159,9 +173,49 @@ public class MonitorConfig {
             return descriptor;
         }
 
+        public boolean isWildcardDescriptor() {
+            return wildcardDescriptor;
+        }
+
         @Override
         public String toString() {
-            return methodName + descriptor;
+            return methodName + "#" + descriptor;
+        }
+    }
+
+    // --- 输出控制 getter ---
+
+    public static boolean isOutputArgs() {
+        return outputArgs;
+    }
+
+    public static boolean isOutputReturn() {
+        return outputReturn;
+    }
+
+    public static boolean isOutputStacktrace() {
+        return outputStacktrace;
+    }
+
+    public static int getStacktraceDepth() {
+        return stacktraceDepth;
+    }
+
+    // --- 属性解析辅助 ---
+
+    private static boolean getBooleanProperty(Properties props, String key, boolean defaultValue) {
+        String val = props.getProperty(key);
+        if (val == null) return defaultValue;
+        return "true".equalsIgnoreCase(val.trim());
+    }
+
+    private static int getIntProperty(Properties props, String key, int defaultValue) {
+        String val = props.getProperty(key);
+        if (val == null) return defaultValue;
+        try {
+            return Integer.parseInt(val.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 }
