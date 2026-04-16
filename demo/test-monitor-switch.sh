@@ -17,7 +17,7 @@ sleep 0.5
 
 # 启动demo程序
 echo "🚀 启动Demo程序..."
-setsid java -cp . com.weihua.MyTest > $DEMO_LOG 2>&1 < /dev/null &
+setsid java -cp . com.weihua.MyTest config=iast-monitor.yaml > $DEMO_LOG 2>&1 < /dev/null &
 DEMO_PID=$!
 echo $DEMO_PID > $PID_FILE
 echo "✅ Demo程序PID: $DEMO_PID"
@@ -26,13 +26,13 @@ sleep 0.5
 echo "========================================"
 echo "1. 首次挂载Agent，开启监控..."
 echo "========================================"
-cd ../agent && java -jar target/iast-agent.jar $DEMO_PID
+cd ../agent && java -jar target/iast-agent.jar $DEMO_PID config=../demo/iast-monitor.yaml
 sleep 2
 
 # 验证拦截日志
 IAST_LOG="/tmp/iast-agent-$DEMO_PID.log"
 echo "📝 检查拦截日志..."
-BEFORE_STOP_COUNT=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+BEFORE_STOP_COUNT=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
 echo "   停止前拦截日志数量: $BEFORE_STOP_COUNT"
 if [ $BEFORE_STOP_COUNT -gt 0 ]; then
     echo "✅ 监控开启正常，拦截生效"
@@ -46,14 +46,14 @@ fi
 echo "========================================"
 echo "2. 执行stop命令，停止监控..."
 echo "========================================"
-cd ../agent && java -jar target/iast-agent.jar $DEMO_PID stop
+cd ../agent && java -jar target/iast-agent.jar $DEMO_PID stop config=../demo/iast-monitor.yaml
 sleep 2
 
 # 验证停止后没有新的拦截日志（两次采样对比，确保完全停止）
-STOP_COUNT1=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+STOP_COUNT1=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
 echo "📝 停止后第1次统计拦截日志数量: $STOP_COUNT1"
 sleep 3
-STOP_COUNT2=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+STOP_COUNT2=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
 echo "📝 停止后第2次统计拦截日志数量: $STOP_COUNT2"
 
 if [ $STOP_COUNT1 -eq $STOP_COUNT2 ]; then
@@ -68,14 +68,14 @@ fi
 echo "========================================"
 echo "3. 执行start命令，重新开启监控..."
 echo "========================================"
-cd ../agent && java -jar target/iast-agent.jar $DEMO_PID start
+cd ../agent && java -jar target/iast-agent.jar $DEMO_PID start config=../demo/iast-monitor.yaml
 sleep 2
 
 # 验证恢复后持续产生新的拦截日志（两次采样对比，确认恢复）
-START_COUNT1=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+START_COUNT1=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
 echo "📝 恢复后第1次统计拦截日志数量: $START_COUNT1"
 sleep 3
-START_COUNT2=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+START_COUNT2=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
 echo "📝 恢复后第2次统计拦截日志数量: $START_COUNT2"
 
 if [ $START_COUNT2 -gt $START_COUNT1 ]; then
