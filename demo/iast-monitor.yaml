@@ -16,23 +16,27 @@ monitor:
 
   # --- 监控规则列表 ---
   rules:
-    # 简单模式：类名 + 方法列表，使用全局默认配置
+    # 使用默认日志插件
     - className: java.io.File
       methods:
         - "<init>#*"
         - "exists#()Z"
         - "getAbsolutePath#()Ljava/lang/String;"
+      plugin: LogPlugin
     
     - className: java.nio.file.Files
       methods:
         - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
+      plugin: LogPlugin
     
     - className: java.net.Socket
       methods:
         - "connect#*"
+      plugin: LogPlugin
     
     - className: java.lang.Runtime
       methods:
         - "exec#*"
+      plugin: LogPlugin
     
 

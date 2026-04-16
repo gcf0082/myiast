@@ -1,6 +1,7 @@
 package com.iast.agent.config;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 单条监控规则实体
@@ -8,6 +9,8 @@ import java.util.List;
 public class MonitorRuleConfig {
     private String className;
     private List<String> methods;
+    private String plugin;              // 插件名称
+    private Map<String, Object> pluginConfig;  // 插件配置
 
     public String getClassName() {
         return className;
@@ -23,5 +26,21 @@ public class MonitorRuleConfig {
 
     public void setMethods(List<String> methods) {
         this.methods = methods;
+    }
+
+    public String getPlugin() {
+        return plugin;
+    }
+
+    public void setPlugin(String plugin) {
+        this.plugin = plugin;
+    }
+
+    public Map<String, Object> getPluginConfig() {
+        return pluginConfig;
+    }
+
+    public void setPluginConfig(Map<String, Object> pluginConfig) {
+        this.pluginConfig = pluginConfig;
     }
 }

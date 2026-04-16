@@ -70,8 +70,8 @@ grep -E "Intercepted method call|Returned:|Constructed:" $IAST_LOG_FILE | tail -
 echo "======================================"
 
 # 验证具体函数拦截情况
-FILE_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.io.File.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
-NIO_FILES_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.nio.file.Files.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
+FILE_EXISTS_INTERCEPTED=$(grep -q "Method Call Intercepted: java.io.File.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
+NIO_FILES_EXISTS_INTERCEPTED=$(grep -q "Method Call Intercepted: java.nio.file.Files.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
 
 echo "📋 监控方法拦截结果："
 echo "  - java.io.File.exists(): $FILE_EXISTS_INTERCEPTED"

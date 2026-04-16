@@ -59,6 +59,9 @@ public class IastAgent {
         // 首次初始化，正常执行流程
         LogWriter.getInstance().info("[IAST Agent] Java version: " + System.getProperty("java.version"));
 
+        // 初始化插件
+        initPlugins();
+
         // 定位Agent jar路径并添加到bootstrap classpath
         File agentJarFile = findAgentJar();
         if (agentJarFile != null) {
@@ -180,6 +183,21 @@ public class IastAgent {
     }
 
     /**
+     * 初始化插件
+     */
+    private static void initPlugins() {
+        try {
+            // 注册默认日志插件
+            com.iast.agent.plugin.LogPlugin logPlugin = new com.iast.agent.plugin.LogPlugin();
+            logPlugin.init(new java.util.HashMap<>());
+            com.iast.agent.plugin.PluginManager.getInstance().registerPlugin("LogPlugin", logPlugin);
+            LogWriter.getInstance().info("[IAST Agent] Initialized default plugin: LogPlugin");
+        } catch (Exception e) {
+            LogWriter.getInstance().info("[IAST Agent] Failed to initialize plugins: " + e.getMessage());
+        }
+    }
+
+    /**
      * 定位Agent jar文件路径
      */
     private static File findAgentJar() {
@@ -222,31 +240,36 @@ public class IastAgent {
                 return 0;
             }
             int callId = globalCallCount.incrementAndGet();
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
-
-            if (self != null) {
-                LogWriter.getInstance().info("[IAST Agent] [" + callId + "] this: " + self);
+            
+            // 构建方法上下文
+            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
+            context.setCallId(callId);
+            context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.ENTER);
+            context.setTarget(self);
+            context.setArgs(args);
+            context.setEnterTime(System.currentTimeMillis());
+            context.setThreadId(Thread.currentThread().getId());
+            context.setThreadName(Thread.currentThread().getName());
+            
+            // 解析类名和方法名
+            // fullMethodName格式：java.io.File.exists()Z
+            int lastDotIndex = fullMethodName.lastIndexOf('.');
+            if (lastDotIndex > 0) {
+                context.setClassName(fullMethodName.substring(0, lastDotIndex));
+                context.setMethodName(fullMethodName.substring(lastDotIndex + 1));
+            } else {
+                context.setClassName(fullMethodName);
+                context.setMethodName("unknown");
             }
-
-            if (MonitorConfig.isOutputArgs()) {
-                if (args == null || args.length == 0) {
-                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Args: (none)");
-                } else {
-                    for (int i = 0; i < args.length; i++) {
-                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
-                    }
-                }
-            }
-
-            if (MonitorConfig.isOutputStacktrace()) {
-                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-                int depth = MonitorConfig.getStacktraceDepth();
-                int end = Math.min(stackTrace.length, 2 + depth);
-                for (int i = 2; i < end; i++) {
-                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
-                }
-            }
+            
+            // 获取调用栈
+            context.setStackTrace(Thread.currentThread().getStackTrace());
+            
+            // 调用插件处理
+            String internalClassName = context.getClassName().replace('.', '/');
+            String pluginName = MonitorConfig.getPluginName(internalClassName);
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
+            
             return callId;
         }
 
@@ -258,18 +281,25 @@ public class IastAgent {
             if (callId == 0) {
                 return;
             }
-            if (MonitorConfig.isOutputReturn()) {
-                if (throwable != null) {
-                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
-                } else {
-                    if (result == null) {
-                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Returned: void/null");
-                    } else {
-                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Returned: " + result);
-                    }
-                }
+            
+            // 构建方法上下文（调用后）
+            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
+            context.setCallId(callId);
+            context.setExitTime(System.currentTimeMillis());
+            context.setDuration(context.getExitTime() - context.getEnterTime());
+            
+            if (throwable != null) {
+                context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXCEPTION);
+                context.setThrowable(throwable);
+            } else {
+                context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
+                context.setResult(result);
             }
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] ========================================");
+            
+            // 调用插件处理
+            // 注意：这里无法获取类名，需要从其他地方传递，或者使用默认插件
+            // 暂时使用默认插件
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall("LogPlugin", context);
         }
     }
 
@@ -287,27 +317,36 @@ public class IastAgent {
                 return 0;
             }
             int callId = globalCallCount.incrementAndGet();
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
-
-            if (MonitorConfig.isOutputArgs()) {
-                if (args == null || args.length == 0) {
-                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Args: (none)");
-                } else {
-                    for (int i = 0; i < args.length; i++) {
-                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
-                    }
-                }
+            
+            // 构建方法上下文
+            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
+            context.setCallId(callId);
+            context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.ENTER);
+            context.setTarget(null);  // 构造函数中this不可用
+            context.setArgs(args);
+            context.setEnterTime(System.currentTimeMillis());
+            context.setThreadId(Thread.currentThread().getId());
+            context.setThreadName(Thread.currentThread().getName());
+            
+            // 解析类名和方法名
+            // fullMethodName格式：java.io.File.<init>()Z
+            int lastDotIndex = fullMethodName.lastIndexOf('.');
+            if (lastDotIndex > 0) {
+                context.setClassName(fullMethodName.substring(0, lastDotIndex));
+                context.setMethodName(fullMethodName.substring(lastDotIndex + 1));
+            } else {
+                context.setClassName(fullMethodName);
+                context.setMethodName("unknown");
             }
-
-            if (MonitorConfig.isOutputStacktrace()) {
-                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-                int depth = MonitorConfig.getStacktraceDepth();
-                int end = Math.min(stackTrace.length, 2 + depth);
-                for (int i = 2; i < end; i++) {
-                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
-                }
-            }
+            
+            // 获取调用栈
+            context.setStackTrace(Thread.currentThread().getStackTrace());
+            
+            // 调用插件处理
+            String internalClassName = context.getClassName().replace('.', '/');
+            String pluginName = MonitorConfig.getPluginName(internalClassName);
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
+            
             return callId;
         }
 
@@ -319,10 +358,19 @@ public class IastAgent {
             if (callId == 0) {
                 return;
             }
-            if (self != null) {
-                LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Constructed: " + self);
-            }
-            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] ========================================");
+            
+            // 构建方法上下文（调用后）
+            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
+            context.setCallId(callId);
+            context.setExitTime(System.currentTimeMillis());
+            context.setDuration(context.getExitTime() - context.getEnterTime());
+            context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
+            context.setTarget(self);  // 构造函数完成后可以访问this
+            
+            // 调用插件处理
+            // 注意：这里无法获取类名，需要从其他地方传递，或者使用默认插件
+            // 暂时使用默认插件
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall("LogPlugin", context);
         }
     }
 }

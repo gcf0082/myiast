@@ -21,6 +21,7 @@ import java.util.Properties;
  */
 public class MonitorConfig {
     private static final Map<String, List<MethodRule>> monitorRules = new HashMap<>();
+    private static final Map<String, String> classPluginMap = new HashMap<>();  // 类名 -> 插件名称
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
@@ -129,8 +130,17 @@ public class MonitorConfig {
                 String methodRuleStr = String.join(",", rule.getMethods());
                 List<MethodRule> methods = parseMethodRules(methodRuleStr);
                 if (!methods.isEmpty()) {
-                    monitorRules.put(className.replace('.', '/'), methods);
-                    LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
+                    String internalClassName = className.replace('.', '/');
+                    monitorRules.put(internalClassName, methods);
+                    
+                    // 存储插件名称，默认使用LogPlugin
+                    String pluginName = rule.getPlugin();
+                    if (pluginName == null || pluginName.isEmpty()) {
+                        pluginName = "LogPlugin";
+                    }
+                    classPluginMap.put(internalClassName, pluginName);
+                    
+                    LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods + " (plugin: " + pluginName + ")");
                 }
             }
         }
@@ -220,6 +230,13 @@ public class MonitorConfig {
      */
     public static List<MethodRule> getMethodRules(String internalClassName) {
         return monitorRules.getOrDefault(internalClassName, new ArrayList<>());
+    }
+
+    /**
+     * 获取指定类对应的插件名称
+     */
+    public static String getPluginName(String internalClassName) {
+        return classPluginMap.getOrDefault(internalClassName, "LogPlugin");
     }
 
     /**
