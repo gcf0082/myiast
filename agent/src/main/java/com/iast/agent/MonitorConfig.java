@@ -21,7 +21,8 @@ import java.util.Properties;
  */
 public class MonitorConfig {
     private static final Map<String, List<MethodRule>> monitorRules = new HashMap<>();
-    private static final Map<String, String> classPluginMap = new HashMap<>();  // 类名 -> 插件名称
+    // 类名 -> 插件名称列表（支持同一个方法挂多个插件，按YAML声明顺序依次调用）
+    private static final Map<String, List<String>> classPluginMap = new HashMap<>();
     // 插件名 -> 该插件的所有规则配置块（已附带className/methods信息）
     private static final Map<String, List<Map<String, Object>>> pluginConfigs = new HashMap<>();
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
@@ -136,14 +137,29 @@ public class MonitorConfig {
                 List<MethodRule> methods = parseMethodRules(methodRuleStr);
                 if (!methods.isEmpty()) {
                     String internalClassName = className.replace('.', '/');
-                    monitorRules.put(internalClassName, methods);
-                    
-                    // 存储插件名称，默认使用LogPlugin
+                    // 同一个类可能有多条规则，合并方法列表（去重）
+                    List<MethodRule> existing = monitorRules.computeIfAbsent(internalClassName, k -> new ArrayList<>());
+                    for (MethodRule m : methods) {
+                        boolean dup = false;
+                        for (MethodRule e : existing) {
+                            if (e.getMethodName().equals(m.getMethodName())
+                                    && e.getDescriptor().equals(m.getDescriptor())) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) existing.add(m);
+                    }
+
+                    // 存储插件名称，默认使用LogPlugin；同一个类可以挂多个插件，按YAML声明顺序排列
                     String pluginName = rule.getPlugin();
                     if (pluginName == null || pluginName.isEmpty()) {
                         pluginName = "LogPlugin";
                     }
-                    classPluginMap.put(internalClassName, pluginName);
+                    List<String> pluginList = classPluginMap.computeIfAbsent(internalClassName, k -> new ArrayList<>());
+                    if (!pluginList.contains(pluginName)) {
+                        pluginList.add(pluginName);
+                    }
 
                     // 聚合该规则的pluginConfig，附带className/methods，后续传给插件init()
                     if (rule.getPluginConfig() != null && !rule.getPluginConfig().isEmpty()) {
@@ -245,11 +261,24 @@ public class MonitorConfig {
         return monitorRules.getOrDefault(internalClassName, new ArrayList<>());
     }
 
+    private static final List<String> DEFAULT_PLUGINS = java.util.Collections.singletonList("LogPlugin");
+
     /**
-     * 获取指定类对应的插件名称
+     * 获取指定类对应的所有插件名称列表
      */
-    public static String getPluginName(String internalClassName) {
-        return classPluginMap.getOrDefault(internalClassName, "LogPlugin");
+    public static List<String> getPluginNames(String internalClassName) {
+        return classPluginMap.getOrDefault(internalClassName, DEFAULT_PLUGINS);
+    }
+
+    /**
+     * 按声明顺序把方法调用事件分发给该类对应的所有插件
+     */
+    public static void dispatchToPlugins(String internalClassName, com.iast.agent.plugin.MethodContext context) {
+        List<String> names = getPluginNames(internalClassName);
+        com.iast.agent.plugin.PluginManager pm = com.iast.agent.plugin.PluginManager.getInstance();
+        for (int i = 0; i < names.size(); i++) {
+            pm.handleMethodCall(names.get(i), context);
+        }
     }
 
     /**

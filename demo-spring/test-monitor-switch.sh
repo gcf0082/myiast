@@ -192,6 +192,16 @@ echo "$LINE" | grep -q '"params":{"file_path":"/tmp"}' \
     || { echo "❌ params 解析错误"; cleanup; exit 1; }
 echo "✅ CustomEventPlugin params[0] 表达式验证通过"
 
+echo "📝 验证同一方法挂多个插件（Files.list 同时走 CustomEventPlugin + LogPlugin）..."
+# CustomEventPlugin 已在上面的 $LINE 验证。这里检查 LogPlugin 在同一次调用里也出了一条拦截日志
+LOG_MATCH=$(grep "Method Call Intercepted: java.nio.file.Files.list" $IAST_LOG | wc -l)
+if [ $LOG_MATCH -lt 1 ]; then
+    echo "❌ LogPlugin 未拦截 Files.list，多插件分发失败"
+    cleanup
+    exit 1
+fi
+echo "✅ LogPlugin 同步拦截 Files.list（$LOG_MATCH 条），多插件分发生效"
+
 echo "📝 验证 target / params[N] / return 表达式..."
 curl -s "http://127.0.0.1:8080/api/echo?msg=hi&times=3" > /dev/null
 sleep 1

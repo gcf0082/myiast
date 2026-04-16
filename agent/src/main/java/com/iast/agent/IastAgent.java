@@ -287,11 +287,10 @@ public class IastAgent {
             // 保存当前上下文到ThreadLocal（供onExit使用）
             currentContext.set(context);
             
-            // 调用插件处理
+            // 调用插件处理（支持同一方法挂多个插件）
             String internalClassName = context.getClassName().replace('.', '/');
-            String pluginName = MonitorConfig.getPluginName(internalClassName);
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
-            
+            MonitorConfig.dispatchToPlugins(internalClassName, context);
+
             return callId;
         }
 
@@ -323,12 +322,11 @@ public class IastAgent {
                 context.setResult(result);
             }
             
-            // 调用插件处理（基于className查找对应插件，与onEnter保持一致）
+            // 调用插件处理（与onEnter保持一致，支持多插件分发）
             String internalClassName = context.getClassName() != null
                     ? context.getClassName().replace('.', '/')
                     : "";
-            String pluginName = MonitorConfig.getPluginName(internalClassName);
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
+            MonitorConfig.dispatchToPlugins(internalClassName, context);
         }
     }
 
@@ -377,10 +375,9 @@ public class IastAgent {
             // 保存当前上下文到ThreadLocal（供onExit获取className等信息）
             currentContext.set(context);
 
-            // 调用插件处理
+            // 调用插件处理（构造函数也支持多插件分发）
             String internalClassName = context.getClassName().replace('.', '/');
-            String pluginName = MonitorConfig.getPluginName(internalClassName);
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
+            MonitorConfig.dispatchToPlugins(internalClassName, context);
 
             return callId;
         }
@@ -407,12 +404,11 @@ public class IastAgent {
             context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
             context.setTarget(self);  // 构造函数完成后可以访问this
 
-            // 调用插件处理（基于className查找对应插件，与onEnter保持一致）
+            // 调用插件处理（与onEnter保持一致，支持多插件分发）
             String internalClassName = context.getClassName() != null
                     ? context.getClassName().replace('.', '/')
                     : "";
-            String pluginName = MonitorConfig.getPluginName(internalClassName);
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
+            MonitorConfig.dispatchToPlugins(internalClassName, context);
         }
     }
 }

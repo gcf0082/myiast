@@ -26,6 +26,7 @@ monitor:
       plugin: RequestIdPlugin
 
     # Step 5a 使用：CustomEventPlugin，演示 params[0] 取参
+    # 同一个方法也挂上 LogPlugin，验证"一个函数多个插件处理"——两份日志都会出
     - className: java.nio.file.Files
       methods:
         - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
@@ -37,6 +38,11 @@ monitor:
         event: "file list | {file_path}"
         event_type: file.list
         event_level: info
+
+    - className: java.nio.file.Files
+      methods:
+        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+      plugin: LogPlugin
 
     # Step 5b 使用：CustomEventPlugin，演示 target / params[N] / return / 链式方法调用
     - className: com.iast.demo.FileCheckController
