@@ -1,15 +1,18 @@
 package com.iast.agent;
 
-import com.sun.tools.attach.AttachNotSupportedException;
-import com.sun.tools.attach.VirtualMachine;
-import com.sun.tools.attach.VirtualMachineDescriptor;
-
-import java.io.IOException;
-import java.util.List;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 /**
- * Attach模式挂载工具
- * 支持动态将IAST Agent挂载到正在运行的JVM进程中
+ * Attach 模式挂载工具——支持 JDK 和 JRE 两种运行环境。
+ *
+ * 自动探测当前 JVM 是否含 jdk.attach 模块：
+ *   - 有：走 JdkAttacher（com.sun.tools.attach.VirtualMachine）
+ *   - 无：走 HotSpotSocketAttacher（/tmp/.java_pid&lt;pid&gt; UNIX Socket 协议）
+ *
+ * 强制模式（调试用）：
+ *   -DiastAttach=jdk      强制走 jdk.attach
+ *   -DiastAttach=socket   强制走 socket 协议（在 JDK 上也能用，用于验证 JRE 路径）
  */
 public class AttachTool {
 
@@ -18,62 +21,61 @@ public class AttachTool {
             printUsage();
             System.exit(1);
         }
-
         String pid = args[0];
         String agentArgs = args.length >= 2 ? args[1] : "";
+        String agentJarPath = resolveAgentJarPath();
+
+        String mode = System.getProperty("iastAttach", "auto");
+        boolean forceSocket = "socket".equalsIgnoreCase(mode);
+        boolean forceJdk = "jdk".equalsIgnoreCase(mode);
+        boolean useJdk = forceJdk || (!forceSocket && isJdkAttachAvailable());
 
         try {
-            // 1. 检查PID是否存在
-            boolean pidExists = false;
-            List<VirtualMachineDescriptor> vms = VirtualMachine.list();
-            for (VirtualMachineDescriptor vmd : vms) {
-                if (vmd.id().equals(pid)) {
-                    pidExists = true;
-                    System.out.println("[IAST AttachTool] Found target process: PID=" + pid + ", " + vmd.displayName());
-                    break;
-                }
+            if (useJdk) {
+                invokeJdkAttacher(pid, agentArgs, agentJarPath);
+            } else {
+                System.out.println("[IAST AttachTool] jdk.attach unavailable or overridden, using HotSpot socket protocol (JRE-compatible)");
+                HotSpotSocketAttacher.attach(pid, agentJarPath, agentArgs);
             }
-
-            if (!pidExists) {
-                System.err.println("[IAST AttachTool] Error: PID " + pid + " not found");
-                System.exit(1);
-            }
-
-            // 2. 挂载到目标JVM
-            System.out.println("[IAST AttachTool] Attaching to process " + pid + "...");
-            VirtualMachine vm = VirtualMachine.attach(pid);
-
-            // 3. 获取Agent jar路径
-            String agentJarPath = AttachTool.class.getProtectionDomain().getCodeSource().getLocation().getPath();
-            System.out.println("[IAST AttachTool] Agent jar path: " + agentJarPath);
-
-            // 4. 加载Agent
-            System.out.println("[IAST AttachTool] Loading IAST Agent...");
-            vm.loadAgent(agentJarPath, agentArgs);
-
-            // 5. 卸载
-            vm.detach();
-            System.out.println("[IAST AttachTool] IAST Agent loaded successfully!");
-            System.out.println("[IAST AttachTool] Check target process output for agent logs.");
-
         } catch (NumberFormatException e) {
             System.err.println("[IAST AttachTool] Error: Invalid PID format");
             printUsage();
             System.exit(1);
-        } catch (AttachNotSupportedException e) {
-            System.err.println("[IAST AttachTool] Error: Target process does not support attach");
-            System.err.println("[IAST AttachTool] Possible reasons:");
-            System.err.println("  1. Target JVM started with -XX:+DisableAttachMechanism");
-            System.err.println("  2. Target process is a different user/permission denied");
-            System.err.println("  3. JDK version mismatch between attach tool and target JVM");
-            System.exit(1);
-        } catch (IOException e) {
-            System.err.println("[IAST AttachTool] Error: Attach failed - " + e.getMessage());
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            System.err.println("[IAST AttachTool] Error: " + cause.getMessage());
             System.exit(1);
         } catch (Exception e) {
             System.err.println("[IAST AttachTool] Error: " + e.getMessage());
-            e.printStackTrace();
             System.exit(1);
+        }
+    }
+
+    /** 判断当前JVM是否带jdk.attach模块 */
+    private static boolean isJdkAttachAvailable() {
+        try {
+            Class.forName("com.sun.tools.attach.VirtualMachine");
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 反射调用JdkAttacher.attach，避免AttachTool自身在JRE上因JdkAttacher的
+     * jdk.attach 导入失败而无法加载。
+     */
+    private static void invokeJdkAttacher(String pid, String agentArgs, String agentJarPath) throws Exception {
+        Class<?> cls = Class.forName("com.iast.agent.JdkAttacher");
+        Method m = cls.getMethod("attach", String.class, String.class, String.class);
+        m.invoke(null, pid, agentArgs, agentJarPath);
+    }
+
+    private static String resolveAgentJarPath() {
+        try {
+            return AttachTool.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+        } catch (Throwable t) {
+            return "";
         }
     }
 
@@ -81,21 +83,22 @@ public class AttachTool {
         System.out.println("IAST Agent Attach Tool");
         System.out.println("Usage: java -jar iast-agent.jar <target-pid> [agent-args]");
         System.out.println();
-        System.out.println("Example:");
-        System.out.println("  # First attach to enable monitoring (支持yaml/properties格式配置)");
+        System.out.println("Examples:");
+        System.out.println("  # First attach to enable monitoring (yaml/properties均可)");
         System.out.println("  java -jar iast-agent.jar 12345 config=/path/to/iast-monitor.yaml");
-        System.out.println("  java -jar iast-agent.jar 12345 config=/path/to/iast-monitor.properties");
-        System.out.println("  # Stop monitoring (restore target process to normal, no need to restart)");
+        System.out.println("  # Stop / restart monitoring without restart");
         System.out.println("  java -jar iast-agent.jar 12345 stop");
-        System.out.println("  # Restart monitoring again");
         System.out.println("  java -jar iast-agent.jar 12345 start");
         System.out.println();
+        System.out.println("JRE support:");
+        System.out.println("  JDK 缺失时自动走 HotSpot UNIX Socket 协议，无需 jdk.attach 模块");
+        System.out.println("  手动切换：-DiastAttach=jdk | -DiastAttach=socket | -DiastAttach=auto（默认）");
+        System.out.println();
         System.out.println("Arguments:");
-        System.out.println("  <target-pid>    PID of the target JVM process to attach");
+        System.out.println("  <target-pid>    PID of the target JVM process");
         System.out.println("  [agent-args]    Optional arguments passed to IAST Agent");
-        System.out.println("                  Supported arguments:");
-        System.out.println("                    config=/path/to/custom/config.yaml 或 config=/path/to/custom/config.properties");
-        System.out.println("                    stop   - Disable monitoring, restore target process");
-        System.out.println("                    start  - Re-enable monitoring after stopped");
+        System.out.println("                    config=/path/to/config.(yaml|properties)");
+        System.out.println("                    stop  - Disable monitoring");
+        System.out.println("                    start - Re-enable monitoring");
     }
 }

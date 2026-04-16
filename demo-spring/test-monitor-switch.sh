@@ -227,6 +227,49 @@ echo "$LINE2" | grep -q '"phase":"exit"' \
 echo "✅ CustomEventPlugin target/params[N]/return 全部验证通过"
 
 echo "========================================"
+echo "6. 测试 JRE 兼容路径（-DiastAttach=socket 强制走 HotSpot UNIX Socket）..."
+echo "========================================"
+cleanup
+# 把jar拷到/tmp，避免相对路径/cwd继承问题
+DEMO_JAR="/tmp/demo-spring-test.jar"
+cp -f "$SCRIPT_DIR/target/demo-spring-1.0.0.jar" "$DEMO_JAR" || { echo "❌ 无法复制 demo-spring jar"; exit 1; }
+setsid java -jar "$DEMO_JAR" > $DEMO_LOG 2>&1 < /dev/null &
+sleep 3
+# setsid在某些环境会fork，$!可能不是java进程。用pgrep拿最新的java pid
+DEMO_PID2=$(pgrep -n -f "$DEMO_JAR")
+if [ -z "$DEMO_PID2" ]; then
+    echo "❌ 无法定位新启动的java进程"
+    cleanup
+    exit 1
+fi
+echo $DEMO_PID2 > $PID_FILE
+echo "✅ 新 Demo PID: $DEMO_PID2"
+for i in {1..30}; do
+    if curl -s http://127.0.0.1:8080/api/hello > /dev/null 2>&1; then
+        echo "✅ Spring Boot 就绪"
+        break
+    fi
+    sleep 1
+done
+cd $SCRIPT_DIR/../agent && java -DiastAttach=socket -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
+sleep 3
+cd $SCRIPT_DIR
+
+curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
+sleep 1
+EVENT_LOG2="/tmp/iast-events-$DEMO_PID2.jsonl"
+LINE3=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG2" 2>/dev/null | tail -1)
+if [ -z "$LINE3" ]; then
+    echo "❌ socket 模式挂载后未产生事件"
+    cleanup
+    exit 1
+fi
+echo "   事件行: $LINE3"
+echo "$LINE3" | grep -q '"params":{"file_path":"/tmp"}' \
+    || { echo "❌ socket 模式 params 解析错误"; cleanup; exit 1; }
+echo "✅ HotSpot UNIX Socket 挂载路径验证通过（JRE 兼容）"
+
+echo "========================================"
 echo "✅ 所有测试通过！"
 echo "========================================"
 echo "📝 IAST日志文件：$IAST_LOG"
@@ -234,5 +277,5 @@ echo "📝 事件日志文件：$EVENT_LOG"
 echo "📝 最后一个请求ID: $REQUEST_ID"
 
 cleanup
-#rm -f $IAST_LOG $EVENT_LOG 2>/dev/null
+#rm -f $IAST_LOG $EVENT_LOG $EVENT_LOG2 2>/dev/null
 echo "测试完成"
