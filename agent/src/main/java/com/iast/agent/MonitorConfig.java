@@ -54,7 +54,7 @@ public class MonitorConfig {
     private static void loadConfig() {
         File configFile = new File(configFilePath);
         if (!configFile.exists()) {
-            System.out.println("[IAST Agent] Config file not found at " + configFilePath + ", using default rules");
+            LogWriter.getInstance().info("[IAST Agent] Config file not found at " + configFilePath + ", using default rules");
             return;
         }
 
@@ -63,6 +63,12 @@ public class MonitorConfig {
             props.load(is);
             
             monitorRules.clear();
+
+            // 解析日志路径配置
+            String customLogPath = props.getProperty("log.path");
+            if (customLogPath != null && !customLogPath.trim().isEmpty()) {
+                LogWriter.getInstance().setLogPath(customLogPath.trim());
+            }
 
             // 解析输出控制选项
             outputArgs = getBooleanProperty(props, "output.args", true);
@@ -83,18 +89,18 @@ public class MonitorConfig {
                     List<MethodRule> methods = parseMethodRules(value);
                     if (!methods.isEmpty()) {
                         monitorRules.put(className.replace('.', '/'), methods); // 转为内部类名格式
-                        System.out.println("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
+                        LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
                     }
                 }
             }
             
             if (monitorRules.isEmpty()) {
-                System.out.println("[IAST Agent] No valid monitor rules found in config, using default rules");
+                LogWriter.getInstance().info("[IAST Agent] No valid monitor rules found in config, using default rules");
                 addDefaultRule();
             }
         } catch (IOException e) {
-            System.err.println("[IAST Agent] Failed to load config file: " + e.getMessage());
-            e.printStackTrace();
+            LogWriter.getInstance().info("[IAST Agent] Failed to load config file: " + e.getMessage());
+            LogWriter.getInstance().info("[IAST Agent] Exception: " + e.toString());
             // 加载失败用默认配置
             addDefaultRule();
         }
@@ -134,7 +140,7 @@ public class MonitorConfig {
         List<MethodRule> defaultMethods = new ArrayList<>();
         defaultMethods.add(new MethodRule("exists", "()Z"));
         monitorRules.put("java/io/File", defaultMethods);
-        System.out.println("[IAST Agent] Using default monitor rule: java.io.File.exists()");
+        LogWriter.getInstance().info("[IAST Agent] Using default monitor rule: java.io.File.exists()");
     }
 
     /**

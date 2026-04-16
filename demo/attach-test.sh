@@ -41,32 +41,37 @@ fi
 
 # 4. 执行Attach挂载
 echo "🔗 开始挂载IAST Agent..."
-ATTACH_OUTPUT=$(cd ../agent && java -jar target/iast-agent.jar $DEMO_PID 2>&1)
+cd ../agent && java -jar target/iast-agent.jar $DEMO_PID
+IAST_LOG_FILE="/tmp/iast-agent-$DEMO_PID.log"
 
-if echo "$ATTACH_OUTPUT" | grep -q "IAST Agent loaded successfully"; then
+# 等待1.5秒，让Agent完成初始化
+sleep 1.5
+
+# 验证挂载成功
+if grep -q "Agent installed successfully" $IAST_LOG_FILE; then
     echo "✅ Agent挂载成功！"
 else
     echo "❌ Agent挂载失败，错误信息："
-    echo "$ATTACH_OUTPUT"
+    cat $IAST_LOG_FILE 2>/dev/null || echo "日志文件不存在"
     kill $DEMO_PID
     rm -f $PID_FILE
     exit 1
 fi
 
-# 5. 等待2秒，让Agent完成初始化并触发方法拦截
+# 5. 等待2秒，触发方法拦截
 sleep 2
 
 # 6. 验证拦截效果
 echo "🔍 验证方法拦截效果..."
 echo "======================================"
-echo "📝 目标程序输出（含Agent拦截日志）："
+echo "📝 IAST拦截日志："
 echo "--------------------------------------"
-grep -E "\[IAST Agent\]|exists|path|Intercepted" $DEMO_OUTPUT | tail -20
+grep -E "Intercepted method call|Returned:|Constructed:" $IAST_LOG_FILE | tail -20
 echo "======================================"
 
 # 验证具体函数拦截情况
-FILE_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.io.File.exists" $DEMO_OUTPUT && echo "✅" || echo "❌")
-NIO_FILES_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.nio.file.Files.exists" $DEMO_OUTPUT && echo "✅" || echo "❌")
+FILE_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.io.File.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
+NIO_FILES_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.nio.file.Files.exists" $IAST_LOG_FILE && echo "✅" || echo "❌")
 
 echo "📋 监控方法拦截结果："
 echo "  - java.io.File.exists(): $FILE_EXISTS_INTERCEPTED"
@@ -77,6 +82,7 @@ if [ "$FILE_EXISTS_INTERCEPTED" = "✅" ] && [ "$NIO_FILES_EXISTS_INTERCEPTED" =
     echo "🎉 Attach模式验证成功！所有配置的监控方法均已正常拦截"
 else
     echo "❌ 错误：部分监控方法未被拦截，请检查Agent配置"
+    echo "IAST日志文件：$IAST_LOG_FILE"
     kill $DEMO_PID
     rm -f $PID_FILE
     exit 1
@@ -86,7 +92,9 @@ fi
 echo "🧹 清理测试进程..."
 kill $DEMO_PID
 rm -f $PID_FILE
+rm -f $IAST_LOG_FILE 2>/dev/null
 
 echo ""
 echo "✅ 验证完成！"
-echo "📝 完整日志文件：$DEMO_OUTPUT"
+echo "📝 Demo运行日志：$DEMO_OUTPUT"
+echo "📝 IAST拦截日志：$IAST_LOG_FILE"

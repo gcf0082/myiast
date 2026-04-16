@@ -22,7 +22,8 @@ public class IastAgent {
      * Pre-agent模式入口：JVM启动时挂载
      */
     public static void premain(String agentArgs, Instrumentation inst) {
-        System.out.println("[IAST Agent] Starting IAST Agent in pre-agent mode...");
+        LogWriter.getInstance().init();
+        LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in pre-agent mode...");
         startAgent(agentArgs, inst);
     }
 
@@ -30,7 +31,8 @@ public class IastAgent {
      * Attach模式入口：动态挂载到运行中的JVM
      */
     public static void agentmain(String agentArgs, Instrumentation inst) {
-        System.out.println("[IAST Agent] Starting IAST Agent in attach mode...");
+        LogWriter.getInstance().init();
+        LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in attach mode...");
         startAgent(agentArgs, inst);
     }
 
@@ -38,16 +40,16 @@ public class IastAgent {
      * 公共Agent启动逻辑，供两种模式复用
      */
     private static void startAgent(String agentArgs, Instrumentation inst) {
-        System.out.println("[IAST Agent] Java version: " + System.getProperty("java.version"));
+        LogWriter.getInstance().info("[IAST Agent] Java version: " + System.getProperty("java.version"));
 
         // 定位Agent jar路径并添加到bootstrap classpath
         File agentJarFile = findAgentJar();
         if (agentJarFile != null) {
             try {
                 inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJarFile));
-                System.out.println("[IAST Agent] Appended agent jar to bootstrap classpath: " + agentJarFile.getAbsolutePath());
+                LogWriter.getInstance().info("[IAST Agent] Appended agent jar to bootstrap classpath: " + agentJarFile.getAbsolutePath());
             } catch (Exception e) {
-                System.err.println("[IAST Agent] Warning: Failed to append to bootstrap classpath: " + e.getMessage());
+                LogWriter.getInstance().info("[IAST Agent] Warning: Failed to append to bootstrap classpath: " + e.getMessage());
             }
         }
 
@@ -83,14 +85,14 @@ public class IastAgent {
                     public void onTransformation(TypeDescription typeDescription, ClassLoader classLoader,
                                                  net.bytebuddy.utility.JavaModule module,
                                                  boolean loaded, net.bytebuddy.dynamic.DynamicType dynamicType) {
-                        System.out.println("[IAST Agent] Transformed: " + typeDescription.getName() + " (loaded=" + loaded + ")");
+                        LogWriter.getInstance().info("[IAST Agent] Transformed: " + typeDescription.getName() + " (loaded=" + loaded + ")");
                     }
 
                     @Override
                     public void onError(String typeName, ClassLoader classLoader,
                                         net.bytebuddy.utility.JavaModule module,
                                         boolean loaded, Throwable throwable) {
-                        System.err.println("[IAST Agent] Error transforming " + typeName + ": " + throwable.getMessage());
+                        LogWriter.getInstance().info("[IAST Agent] Error transforming " + typeName + ": " + throwable.getMessage());
                     }
                 });
 
@@ -127,9 +129,9 @@ public class IastAgent {
                                 .and(ElementMatchers.hasDescriptor(rule.getDescriptor()));
                     }
                     methodMatcher = (methodMatcher == null) ? m : methodMatcher.or(m);
-                }
-                System.out.println("[IAST Agent] Adding monitor: " + className + "." + rule.getMethodName() + "#" + rule.getDescriptor());
-            }
+                 }
+                 LogWriter.getInstance().info("[IAST Agent] Adding monitor: " + className + "." + rule.getMethodName() + "#" + rule.getDescriptor());
+             }
 
             // 应用普通方法Advice
             if (methodMatcher != null) {
@@ -155,7 +157,7 @@ public class IastAgent {
         // 安装Agent
         agentBuilder.installOn(inst);
             
-        System.out.println("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
+        LogWriter.getInstance().info("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
     }
 
     /**
@@ -182,7 +184,7 @@ public class IastAgent {
                 if (f.exists() && f.getName().endsWith(".jar")) return f;
             }
         } catch (Exception e) {
-            System.err.println("[IAST Agent] Warning: Could not locate agent jar: " + e.getMessage());
+            LogWriter.getInstance().info("[IAST Agent] Warning: Could not locate agent jar: " + e.getMessage());
         }
         return null;
     }
@@ -197,19 +199,19 @@ public class IastAgent {
                 @Advice.This(optional = true, typing = Assigner.Typing.DYNAMIC) Object self,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
             int callId = globalCallCount.incrementAndGet();
-            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
-            System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
 
             if (self != null) {
-                System.out.println("[IAST Agent] [" + callId + "] this: " + self);
+                LogWriter.getInstance().info("[IAST Agent] [" + callId + "] this: " + self);
             }
 
             if (MonitorConfig.isOutputArgs()) {
                 if (args == null || args.length == 0) {
-                    System.out.println("[IAST Agent] [" + callId + "] Args: (none)");
+                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Args: (none)");
                 } else {
                     for (int i = 0; i < args.length; i++) {
-                        System.out.println("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
+                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
                     }
                 }
             }
@@ -219,7 +221,7 @@ public class IastAgent {
                 int depth = MonitorConfig.getStacktraceDepth();
                 int end = Math.min(stackTrace.length, 2 + depth);
                 for (int i = 2; i < end; i++) {
-                    System.out.println("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
+                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
                 }
             }
             return callId;
@@ -231,16 +233,16 @@ public class IastAgent {
                                   @Advice.Thrown Throwable throwable) {
             if (MonitorConfig.isOutputReturn()) {
                 if (throwable != null) {
-                    System.out.println("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
+                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
                 } else {
                     if (result == null) {
-                        System.out.println("[IAST Agent] [" + callId + "] Returned: void/null");
+                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Returned: void/null");
                     } else {
-                        System.out.println("[IAST Agent] [" + callId + "] Returned: " + result);
+                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Returned: " + result);
                     }
                 }
             }
-            System.out.println("[IAST Agent] [" + callId + "] ========================================");
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] ========================================");
         }
     }
 
@@ -254,15 +256,15 @@ public class IastAgent {
                 @Advice.Origin("#t.<init>#s") String fullMethodName,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
             int callId = globalCallCount.incrementAndGet();
-            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
-            System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
 
             if (MonitorConfig.isOutputArgs()) {
                 if (args == null || args.length == 0) {
-                    System.out.println("[IAST Agent] [" + callId + "] Args: (none)");
+                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Args: (none)");
                 } else {
                     for (int i = 0; i < args.length; i++) {
-                        System.out.println("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
+                        LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Arg[" + i + "]: " + args[i]);
                     }
                 }
             }
@@ -272,7 +274,7 @@ public class IastAgent {
                 int depth = MonitorConfig.getStacktraceDepth();
                 int end = Math.min(stackTrace.length, 2 + depth);
                 for (int i = 2; i < end; i++) {
-                    System.out.println("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
+                    LogWriter.getInstance().info("[IAST Agent] [" + callId + "] at " + stackTrace[i]);
                 }
             }
             return callId;
@@ -283,9 +285,9 @@ public class IastAgent {
                 @Advice.Enter int callId,
                 @Advice.This(typing = Assigner.Typing.DYNAMIC) Object self) {
             if (self != null) {
-                System.out.println("[IAST Agent] [" + callId + "] Constructed: " + self);
+                LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Constructed: " + self);
             }
-            System.out.println("[IAST Agent] [" + callId + "] ========================================");
+            LogWriter.getInstance().info("[IAST Agent] [" + callId + "] ========================================");
         }
     }
 }
