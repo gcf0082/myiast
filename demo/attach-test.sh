@@ -30,7 +30,7 @@ setsid java  -cp . com.weihua.MyTest > $DEMO_OUTPUT 2>&1 < /dev/null &
 DEMO_PID=$!
 echo $DEMO_PID > $PID_FILE
 echo "✅ 测试程序已启动，PID: $DEMO_PID"
-sleep 2
+sleep 0.1
 
 # 3. 检查进程是否运行
 if ! ps aux | grep $DEMO_PID | grep -q "com.weihua.MyTest"; then
@@ -64,10 +64,19 @@ echo "--------------------------------------"
 grep -E "\[IAST Agent\]|exists|path|Intercepted" $DEMO_OUTPUT | tail -20
 echo "======================================"
 
-if grep -q "Intercepted method call" $DEMO_OUTPUT; then
-    echo "🎉 Attach模式验证成功！Agent已正常拦截方法调用"
+# 验证具体函数拦截情况
+FILE_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.io.File.exists" $DEMO_OUTPUT && echo "✅" || echo "❌")
+NIO_FILES_EXISTS_INTERCEPTED=$(grep -q "Intercepted method call: java.nio.file.Files.exists" $DEMO_OUTPUT && echo "✅" || echo "❌")
+
+echo "📋 监控方法拦截结果："
+echo "  - java.io.File.exists(): $FILE_EXISTS_INTERCEPTED"
+echo "  - java.nio.file.Files.exists(): $NIO_FILES_EXISTS_INTERCEPTED"
+echo "======================================"
+
+if [ "$FILE_EXISTS_INTERCEPTED" = "✅" ] && [ "$NIO_FILES_EXISTS_INTERCEPTED" = "✅" ]; then
+    echo "🎉 Attach模式验证成功！所有配置的监控方法均已正常拦截"
 else
-    echo "❌ 错误：未检测到方法拦截日志，Agent功能异常"
+    echo "❌ 错误：部分监控方法未被拦截，请检查Agent配置"
     kill $DEMO_PID
     rm -f $PID_FILE
     exit 1

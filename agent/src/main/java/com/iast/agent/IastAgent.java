@@ -197,7 +197,7 @@ public class IastAgent {
                 @Advice.This(optional = true, typing = Assigner.Typing.DYNAMIC) Object self,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
             int callId = globalCallCount.incrementAndGet();
-            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call ===");
+            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
             System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
 
             if (self != null) {
@@ -254,7 +254,7 @@ public class IastAgent {
                 @Advice.Origin("#t.<init>#s") String fullMethodName,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
             int callId = globalCallCount.incrementAndGet();
-            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call ===");
+            System.out.println("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
             System.out.println("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
 
             if (MonitorConfig.isOutputArgs()) {
