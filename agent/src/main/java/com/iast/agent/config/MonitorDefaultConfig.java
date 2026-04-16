@@ -7,7 +7,6 @@ import java.util.List;
  */
 public class MonitorDefaultConfig {
     private List<String> events = List.of("enter", "return", "exception");
-    private int sampleRate = 100;
 
     public List<String> getEvents() {
         return events;
@@ -15,13 +14,5 @@ public class MonitorDefaultConfig {
 
     public void setEvents(List<String> events) {
         this.events = events;
-    }
-
-    public int getSampleRate() {
-        return sampleRate;
-    }
-
-    public void setSampleRate(int sampleRate) {
-        this.sampleRate = sampleRate;
     }
 }

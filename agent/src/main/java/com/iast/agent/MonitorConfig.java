@@ -121,7 +121,7 @@ public class MonitorConfig {
         // 解析监控规则
         if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getRules() != null) {
             for (MonitorRuleConfig rule : rootConfig.getMonitor().getRules()) {
-                String className = rule.getClazz();
+                String className = rule.getClassName();
                 if (className == null || className.isEmpty() || rule.getMethods() == null || rule.getMethods().isEmpty()) {
                     continue;
                 }

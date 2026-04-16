@@ -7,38 +7,32 @@ output:
   args: true                 # 是否输出方法参数
   return: true               # 是否输出返回值
   stacktrace: true           # 是否输出调用栈
-  stacktrace-depth: 8        # 调用栈最大深度
+  stacktraceDepth: 8         # 调用栈最大深度
 
 # --- 全局默认监控配置 ---
 monitor:
   default:
     events: [enter, return, exception]   # 默认监控事件：enter(调用前)/return(调用后)/exception(抛异常)
-    sample-rate: 100                     # 默认采样率：0-100，默认100%采样
 
   # --- 监控规则列表 ---
   rules:
     # 简单模式：类名 + 方法列表，使用全局默认配置
-    - class: java.io.File
+    - className: java.io.File
       methods:
         - "<init>#*"
         - "exists#()Z"
         - "getAbsolutePath#()Ljava/lang/String;"
     
-    - class: java.nio.file.Files
+    - className: java.nio.file.Files
       methods:
         - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
     
-    # 高级模式：自定义类级别配置，覆盖全局默认
-    - class: java.net.Socket
+    - className: java.net.Socket
       methods:
         - "connect#*"
-      events: [enter, exception]        # 仅监控进入和异常事件，覆盖全局默认
-      sample-rate: 50                    # 采样率50%，覆盖全局默认
     
-    - class: java.lang.Runtime
+    - className: java.lang.Runtime
       methods:
         - "exec#*"
     
-    - class: java.util.ArrayList
-      methods:
-        - "add#*"
+
