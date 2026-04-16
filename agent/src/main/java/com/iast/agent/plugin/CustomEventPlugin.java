@@ -84,9 +84,12 @@ public class CustomEventPlugin implements IastPlugin {
         evt.put("event_level", def.eventLevel);
         evt.put("phase", ctx.getPhase() == null ? null : ctx.getPhase().name().toLowerCase());
 
+        // requestId 由 RequestIdPlugin 写入 RequestIdHolder（全局 ThreadLocal），
+        // 任何插件都能通过 RequestIdHolder.get() 直接访问；这里默认总是写入事件，
+        // 没有请求上下文时为 null，保持字段稳定便于下游消费。
         String requestId = RequestIdHolder.get();
         if (requestId == null) requestId = ctx.getRequestId();
-        if (requestId != null) evt.put("requestId", requestId);
+        evt.put("requestId", requestId);
 
         evt.put("callId", ctx.getCallId());
         evt.put("className", ctx.getClassName());
