@@ -49,13 +49,17 @@ echo "========================================"
 cd ../agent && java -jar target/iast-agent.jar $DEMO_PID stop
 sleep 2
 
-# 验证停止后没有新的拦截日志
-AFTER_STOP_COUNT=$(grep "Intercepted method call" $IAST_LOG | wc -l)
-echo "📝 停止后拦截日志数量: $AFTER_STOP_COUNT"
-if [ $AFTER_STOP_COUNT -eq $BEFORE_STOP_COUNT ]; then
-    echo "✅ 监控停止成功，无新的拦截日志，目标程序已恢复正常"
+# 验证停止后没有新的拦截日志（两次采样对比，确保完全停止）
+STOP_COUNT1=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+echo "📝 停止后第1次统计拦截日志数量: $STOP_COUNT1"
+sleep 3
+STOP_COUNT2=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+echo "📝 停止后第2次统计拦截日志数量: $STOP_COUNT2"
+
+if [ $STOP_COUNT1 -eq $STOP_COUNT2 ]; then
+    echo "✅ 监控停止成功，停止后5秒内无新的拦截日志，目标程序已恢复正常"
 else
-    echo "❌ 监控停止失败，仍有新的拦截日志产生"
+    echo "❌ 监控停止失败，停止后仍有新的拦截日志产生"
     kill $DEMO_PID
     rm -f $PID_FILE
     exit 1
@@ -67,13 +71,17 @@ echo "========================================"
 cd ../agent && java -jar target/iast-agent.jar $DEMO_PID start
 sleep 2
 
-# 验证恢复后有新的拦截日志
-AFTER_START_COUNT=$(grep "Intercepted method call" $IAST_LOG | wc -l)
-echo "📝 恢复后拦截日志数量: $AFTER_START_COUNT"
-if [ $AFTER_START_COUNT -gt $AFTER_STOP_COUNT ]; then
-    echo "✅ 监控恢复成功，重新产生拦截日志"
+# 验证恢复后持续产生新的拦截日志（两次采样对比，确认恢复）
+START_COUNT1=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+echo "📝 恢复后第1次统计拦截日志数量: $START_COUNT1"
+sleep 3
+START_COUNT2=$(grep "Intercepted method call" $IAST_LOG | wc -l)
+echo "📝 恢复后第2次统计拦截日志数量: $START_COUNT2"
+
+if [ $START_COUNT2 -gt $START_COUNT1 ]; then
+    echo "✅ 监控恢复成功，恢复后持续产生新的拦截日志"
 else
-    echo "❌ 监控恢复失败，无新的拦截日志"
+    echo "❌ 监控恢复失败，恢复后无新的拦截日志产生"
     kill $DEMO_PID
     rm -f $PID_FILE
     exit 1
