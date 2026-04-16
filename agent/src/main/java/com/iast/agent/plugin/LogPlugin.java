@@ -27,37 +27,40 @@ public class LogPlugin implements IastPlugin {
     }
     
     private void handleEnter(MethodContext context) {
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] === Method Call Intercepted: " + 
-                       context.getClassName() + "." + context.getMethodName() + " ===");
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] Method: " + 
-                       context.getClassName() + "." + context.getMethodName());
+        String requestId = RequestIdHolder.get();
+        String prefix = "[IAST Agent] [callId=" + context.getCallId() + "]" + (requestId != null ? " [requestId=" + requestId + "]" : "");
+        logWriter.info(prefix + " === Method Call Intercepted: " + context.getClassName() + "." + context.getMethodName() + " ===");
+        logWriter.info(prefix + " Method: " + context.getClassName() + "." + context.getMethodName());
         
         if (context.getTarget() != null) {
-            logWriter.info("[IAST Agent] [" + context.getCallId() + "] this: " + context.getTarget());
+            logWriter.info(prefix + " this: " + context.getTarget());
         }
         
         if (context.getArgs() != null && context.getArgs().length > 0) {
             for (int i = 0; i < context.getArgs().length; i++) {
-                logWriter.info("[IAST Agent] [" + context.getCallId() + "] Arg[" + i + "]: " + context.getArgs()[i]);
+                logWriter.info(prefix + " Arg[" + i + "]: " + context.getArgs()[i]);
             }
         }
     }
     
     private void handleExit(MethodContext context) {
+        String requestId = RequestIdHolder.get();
+        String prefix = "[IAST Agent] [callId=" + context.getCallId() + "]" + (requestId != null ? " [requestId=" + requestId + "]" : "");
         if (context.getResult() == null) {
-            logWriter.info("[IAST Agent] [" + context.getCallId() + "] Returned: void/null");
+            logWriter.info(prefix + " Returned: void/null");
         } else {
-            logWriter.info("[IAST Agent] [" + context.getCallId() + "] Returned: " + context.getResult());
+            logWriter.info(prefix + " Returned: " + context.getResult());
         }
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] Duration: " + context.getDuration() + "ms");
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] ========================================");
+        logWriter.info(prefix + " Duration: " + context.getDuration() + "ms");
+        logWriter.info(prefix + " ========================================");
     }
     
     private void handleException(MethodContext context) {
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] Thrown: " + 
-                       context.getThrowable().getClass().getName() + ": " + context.getThrowable().getMessage());
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] Duration: " + context.getDuration() + "ms");
-        logWriter.info("[IAST Agent] [" + context.getCallId() + "] ========================================");
+        String requestId = RequestIdHolder.get();
+        String prefix = "[IAST Agent] [callId=" + context.getCallId() + "]" + (requestId != null ? " [requestId=" + requestId + "]" : "");
+        logWriter.info(prefix + " Thrown: " + context.getThrowable().getClass().getName() + ": " + context.getThrowable().getMessage());
+        logWriter.info(prefix + " Duration: " + context.getDuration() + "ms");
+        logWriter.info(prefix + " ========================================");
     }
     
     @Override

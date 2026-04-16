@@ -32,6 +32,9 @@ public class MethodContext {
     // 调用栈
     private StackTraceElement[] stackTrace;
     
+    // 请求跟踪ID
+    private String requestId;
+    
     public enum CallPhase {
         ENTER, EXIT, EXCEPTION
     }
@@ -155,5 +158,13 @@ public class MethodContext {
     
     public void setStackTrace(StackTraceElement[] stackTrace) {
         this.stackTrace = stackTrace;
+    }
+    
+    public String getRequestId() {
+        return requestId;
+    }
+    
+    public void setRequestId(String requestId) {
+        this.requestId = requestId;
     }
 }

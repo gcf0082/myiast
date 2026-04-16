@@ -21,6 +21,11 @@ public class IastAgent {
     public static volatile boolean MONITOR_ENABLED = true;
     // 初始化标记，避免重复执行初始化逻辑
     private static volatile boolean INITIALIZED = false;
+    
+    // 当前方法上下文（用于onExit时获取类名）
+    // 必须public：Advice字节码会被内联到被监控的类中（如HttpServlet），
+    // 这些类与IastAgent处于不同ClassLoader，访问private字段会触发IllegalAccessError
+    public static final ThreadLocal<com.iast.agent.plugin.MethodContext> currentContext = new ThreadLocal<>();
 
     /**
      * Pre-agent模式入口：JVM启动时挂载
@@ -192,6 +197,12 @@ public class IastAgent {
             logPlugin.init(new java.util.HashMap<>());
             com.iast.agent.plugin.PluginManager.getInstance().registerPlugin("LogPlugin", logPlugin);
             LogWriter.getInstance().info("[IAST Agent] Initialized default plugin: LogPlugin");
+            
+            // 注册请求跟踪插件
+            com.iast.agent.plugin.RequestIdPlugin requestIdPlugin = new com.iast.agent.plugin.RequestIdPlugin();
+            requestIdPlugin.init(new java.util.HashMap<>());
+            com.iast.agent.plugin.PluginManager.getInstance().registerPlugin("RequestIdPlugin", requestIdPlugin);
+            LogWriter.getInstance().info("[IAST Agent] Initialized plugin: RequestIdPlugin");
         } catch (Exception e) {
             LogWriter.getInstance().info("[IAST Agent] Failed to initialize plugins: " + e.getMessage());
         }
@@ -252,18 +263,24 @@ public class IastAgent {
             context.setThreadName(Thread.currentThread().getName());
             
             // 解析类名和方法名
-            // fullMethodName格式：java.io.File.exists()Z
-            int lastDotIndex = fullMethodName.lastIndexOf('.');
+            // fullMethodName格式：com.example.MyClass.method(arg.Type1,arg.Type2)RetType
+            // 参数类型中可能含"."，因此需要在"("之前查找最后一个"."
+            int parenIndex = fullMethodName.indexOf('(');
+            int searchEnd = (parenIndex > 0) ? parenIndex : fullMethodName.length();
+            int lastDotIndex = fullMethodName.lastIndexOf('.', searchEnd - 1);
             if (lastDotIndex > 0) {
                 context.setClassName(fullMethodName.substring(0, lastDotIndex));
-                context.setMethodName(fullMethodName.substring(lastDotIndex + 1));
+                context.setMethodName(fullMethodName.substring(lastDotIndex + 1, searchEnd));
             } else {
                 context.setClassName(fullMethodName);
                 context.setMethodName("unknown");
             }
-            
+
             // 获取调用栈
             context.setStackTrace(Thread.currentThread().getStackTrace());
+
+            // 保存当前上下文到ThreadLocal（供onExit使用）
+            currentContext.set(context);
             
             // 调用插件处理
             String internalClassName = context.getClassName().replace('.', '/');
@@ -282,9 +299,14 @@ public class IastAgent {
                 return;
             }
             
-            // 构建方法上下文（调用后）
-            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
-            context.setCallId(callId);
+            // 从ThreadLocal获取上下文
+            com.iast.agent.plugin.MethodContext context = currentContext.get();
+            currentContext.remove();
+            
+            if (context == null) {
+                return;
+            }
+            
             context.setExitTime(System.currentTimeMillis());
             context.setDuration(context.getExitTime() - context.getEnterTime());
             
@@ -296,10 +318,12 @@ public class IastAgent {
                 context.setResult(result);
             }
             
-            // 调用插件处理
-            // 注意：这里无法获取类名，需要从其他地方传递，或者使用默认插件
-            // 暂时使用默认插件
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall("LogPlugin", context);
+            // 调用插件处理（基于className查找对应插件，与onEnter保持一致）
+            String internalClassName = context.getClassName() != null
+                    ? context.getClassName().replace('.', '/')
+                    : "";
+            String pluginName = MonitorConfig.getPluginName(internalClassName);
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
         }
     }
 
@@ -329,11 +353,14 @@ public class IastAgent {
             context.setThreadName(Thread.currentThread().getName());
             
             // 解析类名和方法名
-            // fullMethodName格式：java.io.File.<init>()Z
-            int lastDotIndex = fullMethodName.lastIndexOf('.');
+            // fullMethodName格式：com.example.MyClass.<init>(arg.Type1,arg.Type2)V
+            // 参数类型中可能含"."，因此需要在"("之前查找最后一个"."
+            int parenIndex = fullMethodName.indexOf('(');
+            int searchEnd = (parenIndex > 0) ? parenIndex : fullMethodName.length();
+            int lastDotIndex = fullMethodName.lastIndexOf('.', searchEnd - 1);
             if (lastDotIndex > 0) {
                 context.setClassName(fullMethodName.substring(0, lastDotIndex));
-                context.setMethodName(fullMethodName.substring(lastDotIndex + 1));
+                context.setMethodName(fullMethodName.substring(lastDotIndex + 1, searchEnd));
             } else {
                 context.setClassName(fullMethodName);
                 context.setMethodName("unknown");
@@ -341,12 +368,15 @@ public class IastAgent {
             
             // 获取调用栈
             context.setStackTrace(Thread.currentThread().getStackTrace());
-            
+
+            // 保存当前上下文到ThreadLocal（供onExit获取className等信息）
+            currentContext.set(context);
+
             // 调用插件处理
             String internalClassName = context.getClassName().replace('.', '/');
             String pluginName = MonitorConfig.getPluginName(internalClassName);
             com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
-            
+
             return callId;
         }
 
@@ -358,19 +388,26 @@ public class IastAgent {
             if (callId == 0) {
                 return;
             }
-            
-            // 构建方法上下文（调用后）
-            com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
-            context.setCallId(callId);
+
+            // 从ThreadLocal取回onEnter保存的上下文，复用className等信息
+            com.iast.agent.plugin.MethodContext context = currentContext.get();
+            currentContext.remove();
+
+            if (context == null) {
+                return;
+            }
+
             context.setExitTime(System.currentTimeMillis());
             context.setDuration(context.getExitTime() - context.getEnterTime());
             context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
             context.setTarget(self);  // 构造函数完成后可以访问this
-            
-            // 调用插件处理
-            // 注意：这里无法获取类名，需要从其他地方传递，或者使用默认插件
-            // 暂时使用默认插件
-            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall("LogPlugin", context);
+
+            // 调用插件处理（基于className查找对应插件，与onEnter保持一致）
+            String internalClassName = context.getClassName() != null
+                    ? context.getClassName().replace('.', '/')
+                    : "";
+            String pluginName = MonitorConfig.getPluginName(internalClassName);
+            com.iast.agent.plugin.PluginManager.getInstance().handleMethodCall(pluginName, context);
         }
     }
 }

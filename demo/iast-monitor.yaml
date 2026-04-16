@@ -39,4 +39,10 @@ monitor:
         - "exec#*"
       plugin: LogPlugin
     
+    # Servlet请求跟踪插件
+    - className: jakarta.servlet.http.HttpServlet
+      methods:
+        - "service#*"
+      plugin: RequestIdPlugin
+    
 
