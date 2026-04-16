@@ -35,6 +35,12 @@
             <artifactId>asm-commons</artifactId>
             <version>9.5</version>
         </dependency>
+        <!-- YAML解析库 -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -39,9 +39,9 @@ if ! ps aux | grep $DEMO_PID | grep -q "com.weihua.MyTest"; then
     exit 1
 fi
 
-# 4. 执行Attach挂载
+# 4. 执行Attach挂载，指定yaml配置文件
 echo "🔗 开始挂载IAST Agent..."
-cd ../agent && java -jar target/iast-agent.jar $DEMO_PID
+cd ../agent && java -jar target/iast-agent.jar $DEMO_PID config=../demo/iast-monitor.yaml
 IAST_LOG_FILE="/tmp/iast-agent-$DEMO_PID.log"
 
 # 等待1.5秒，让Agent完成初始化
@@ -88,6 +88,7 @@ else
     exit 1
 fi
 
+cat $IAST_LOG_FILE
 # 7. 清理进程
 echo "🧹 清理测试进程..."
 kill $DEMO_PID

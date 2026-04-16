@@ -1,5 +1,10 @@
 package com.iast.agent;
 
+import com.iast.agent.config.MonitorRuleConfig;
+import com.iast.agent.config.OutputConfig;
+import com.iast.agent.config.YamlRootConfig;
+import org.yaml.snakeyaml.Yaml;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -16,8 +21,9 @@ import java.util.Properties;
  */
 public class MonitorConfig {
     private static final Map<String, List<MethodRule>> monitorRules = new HashMap<>();
-    private static final String DEFAULT_CONFIG_PATH = "iast-monitor.properties";
-    private static String configFilePath = DEFAULT_CONFIG_PATH;
+    private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
+    private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
+    private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
 
     // 输出控制选项
     private static boolean outputArgs = true;
@@ -53,56 +59,115 @@ public class MonitorConfig {
      */
     private static void loadConfig() {
         File configFile = new File(configFilePath);
+        // 如果是默认配置路径，yaml不存在则尝试找properties配置
+        if (!configFile.exists() && DEFAULT_YAML_CONFIG_PATH.equals(configFilePath)) {
+            File propertiesConfig = new File(DEFAULT_PROPERTIES_CONFIG_PATH);
+            if (propertiesConfig.exists()) {
+                configFilePath = DEFAULT_PROPERTIES_CONFIG_PATH;
+                configFile = propertiesConfig;
+                LogWriter.getInstance().info("[IAST Agent] Use default properties config: " + DEFAULT_PROPERTIES_CONFIG_PATH);
+            }
+        }
         if (!configFile.exists()) {
             LogWriter.getInstance().info("[IAST Agent] Config file not found at " + configFilePath + ", using default rules");
             return;
         }
 
         try (InputStream is = new FileInputStream(configFile)) {
-            Properties props = new Properties();
-            props.load(is);
-            
             monitorRules.clear();
-
-            // 解析日志路径配置
-            String customLogPath = props.getProperty("log.path");
-            if (customLogPath != null && !customLogPath.trim().isEmpty()) {
-                LogWriter.getInstance().setLogPath(customLogPath.trim());
-            }
-
-            // 解析输出控制选项
-            outputArgs = getBooleanProperty(props, "output.args", true);
-            outputReturn = getBooleanProperty(props, "output.return", true);
-            outputStacktrace = getBooleanProperty(props, "output.stacktrace", true);
-            stacktraceDepth = getIntProperty(props, "output.stacktrace.depth", 8);
-
-            for (Map.Entry<Object, Object> entry : props.entrySet()) {
-                String key = entry.getKey().toString().trim();
-                String value = entry.getValue().toString().trim();
-                
-                if (key.startsWith("monitor.")) {
-                    String className = key.substring("monitor.".length()).trim();
-                    if (className.isEmpty() || value.isEmpty()) {
-                        continue;
-                    }
-                    
-                    List<MethodRule> methods = parseMethodRules(value);
-                    if (!methods.isEmpty()) {
-                        monitorRules.put(className.replace('.', '/'), methods); // 转为内部类名格式
-                        LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
-                    }
-                }
+            
+            // 判断配置文件类型：yaml/yml还是properties
+            if (configFilePath.toLowerCase().endsWith(".yaml") || configFilePath.toLowerCase().endsWith(".yml")) {
+                // 加载YAML格式配置
+                Yaml yaml = new Yaml();
+                YamlRootConfig rootConfig = yaml.loadAs(is, YamlRootConfig.class);
+                processYamlConfig(rootConfig);
+            } else {
+                // 加载Properties格式配置（兼容旧版本）
+                Properties props = new Properties();
+                props.load(is);
+                processPropertiesConfig(props);
             }
             
             if (monitorRules.isEmpty()) {
                 LogWriter.getInstance().info("[IAST Agent] No valid monitor rules found in config, using default rules");
                 addDefaultRule();
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             LogWriter.getInstance().info("[IAST Agent] Failed to load config file: " + e.getMessage());
             LogWriter.getInstance().info("[IAST Agent] Exception: " + e.toString());
             // 加载失败用默认配置
             addDefaultRule();
+        }
+    }
+
+    /**
+     * 处理YAML格式配置
+     */
+    private static void processYamlConfig(YamlRootConfig rootConfig) {
+        if (rootConfig == null) {
+            return;
+        }
+
+        // 解析输出配置
+        OutputConfig outputConfig = rootConfig.getOutput();
+        if (outputConfig != null) {
+            outputArgs = outputConfig.isArgs();
+            outputReturn = outputConfig.isReturn();
+            outputStacktrace = outputConfig.isStacktrace();
+            stacktraceDepth = outputConfig.getStacktraceDepth();
+        }
+
+        // 解析监控规则
+        if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getRules() != null) {
+            for (MonitorRuleConfig rule : rootConfig.getMonitor().getRules()) {
+                String className = rule.getClazz();
+                if (className == null || className.isEmpty() || rule.getMethods() == null || rule.getMethods().isEmpty()) {
+                    continue;
+                }
+                // 方法规则转为逗号分隔字符串，复用原有解析逻辑
+                String methodRuleStr = String.join(",", rule.getMethods());
+                List<MethodRule> methods = parseMethodRules(methodRuleStr);
+                if (!methods.isEmpty()) {
+                    monitorRules.put(className.replace('.', '/'), methods);
+                    LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
+                }
+            }
+        }
+    }
+
+    /**
+     * 处理Properties格式配置（兼容旧版本）
+     */
+    private static void processPropertiesConfig(Properties props) {
+        // 解析日志路径配置
+        String customLogPath = props.getProperty("log.path");
+        if (customLogPath != null && !customLogPath.trim().isEmpty()) {
+            LogWriter.getInstance().setLogPath(customLogPath.trim());
+        }
+
+        // 解析输出控制选项
+        outputArgs = getBooleanProperty(props, "output.args", true);
+        outputReturn = getBooleanProperty(props, "output.return", true);
+        outputStacktrace = getBooleanProperty(props, "output.stacktrace", true);
+        stacktraceDepth = getIntProperty(props, "output.stacktrace.depth", 8);
+
+        for (Map.Entry<Object, Object> entry : props.entrySet()) {
+            String key = entry.getKey().toString().trim();
+            String value = entry.getValue().toString().trim();
+            
+            if (key.startsWith("monitor.")) {
+                String className = key.substring("monitor.".length()).trim();
+                if (className.isEmpty() || value.isEmpty()) {
+                    continue;
+                }
+                
+                List<MethodRule> methods = parseMethodRules(value);
+                if (!methods.isEmpty()) {
+                    monitorRules.put(className.replace('.', '/'), methods); // 转为内部类名格式
+                    LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods);
+                }
+            }
         }
     }
 

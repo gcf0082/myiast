@@ -7,8 +7,7 @@ import java.nio.file.Paths;
 
 public class MyTest {
     public static void main(String[] args) {
-        int count = 0;
-        while (count < 30) {
+        while (true) {
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
@@ -30,8 +29,6 @@ public class MyTest {
                 System.err.println("反射调用异常: " + e);
                 e.printStackTrace();
             }
-            
-            count++;
         }
     }
 }
