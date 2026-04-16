@@ -82,11 +82,19 @@ public class AttachTool {
         System.out.println("Usage: java -jar iast-agent.jar <target-pid> [agent-args]");
         System.out.println();
         System.out.println("Example:");
+        System.out.println("  # First attach to enable monitoring");
         System.out.println("  java -jar iast-agent.jar 12345 config=/path/to/iast-monitor.properties");
+        System.out.println("  # Stop monitoring (restore target process to normal, no need to restart)");
+        System.out.println("  java -jar iast-agent.jar 12345 stop");
+        System.out.println("  # Restart monitoring again");
+        System.out.println("  java -jar iast-agent.jar 12345 start");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  <target-pid>    PID of the target JVM process to attach");
         System.out.println("  [agent-args]    Optional arguments passed to IAST Agent");
-        System.out.println("                  Supported arguments: config=/path/to/custom/config.properties");
+        System.out.println("                  Supported arguments:");
+        System.out.println("                    config=/path/to/custom/config.properties");
+        System.out.println("                    stop   - Disable monitoring, restore target process");
+        System.out.println("                    start  - Re-enable monitoring after stopped");
     }
 }

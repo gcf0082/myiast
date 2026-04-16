@@ -17,6 +17,10 @@ import java.util.jar.JarFile;
 
 public class IastAgent {
     public static final AtomicInteger globalCallCount = new AtomicInteger(0);
+    // 监控全局开关，volatile保证多线程立即可见
+    public static volatile boolean MONITOR_ENABLED = true;
+    // 初始化标记，避免重复执行初始化逻辑
+    private static volatile boolean INITIALIZED = false;
 
     /**
      * Pre-agent模式入口：JVM启动时挂载
@@ -40,6 +44,19 @@ public class IastAgent {
      * 公共Agent启动逻辑，供两种模式复用
      */
     private static void startAgent(String agentArgs, Instrumentation inst) {
+        // 如果已经初始化，仅处理开关指令
+        if (INITIALIZED) {
+            LogWriter.getInstance().info("[IAST Agent] Already initialized, processing control command: " + agentArgs);
+            if ("stop".equals(agentArgs)) {
+                MONITOR_ENABLED = false;
+                LogWriter.getInstance().info("[IAST Agent] Monitor disabled successfully, target process restored to normal");
+            } else if ("start".equals(agentArgs)) {
+                MONITOR_ENABLED = true;
+                LogWriter.getInstance().info("[IAST Agent] Monitor enabled successfully");
+            }
+            return;
+        }
+        // 首次初始化，正常执行流程
         LogWriter.getInstance().info("[IAST Agent] Java version: " + System.getProperty("java.version"));
 
         // 定位Agent jar路径并添加到bootstrap classpath
@@ -158,6 +175,8 @@ public class IastAgent {
         agentBuilder.installOn(inst);
             
         LogWriter.getInstance().info("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
+        // 标记初始化完成
+        INITIALIZED = true;
     }
 
     /**
@@ -198,6 +217,10 @@ public class IastAgent {
                 @Advice.Origin("#t.#m#s") String fullMethodName,
                 @Advice.This(optional = true, typing = Assigner.Typing.DYNAMIC) Object self,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
+            // 全局开关关闭时，直接跳过所有拦截逻辑
+            if (!MONITOR_ENABLED) {
+                return 0;
+            }
             int callId = globalCallCount.incrementAndGet();
             LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
             LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
@@ -231,6 +254,10 @@ public class IastAgent {
         public static void onExit(@Advice.Enter int callId,
                                   @Advice.Return(readOnly = true, typing = Assigner.Typing.DYNAMIC) Object result,
                                   @Advice.Thrown Throwable throwable) {
+            // callId为0说明开关关闭，直接跳过
+            if (callId == 0) {
+                return;
+            }
             if (MonitorConfig.isOutputReturn()) {
                 if (throwable != null) {
                     LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Thrown: " + throwable.getClass().getName() + ": " + throwable.getMessage());
@@ -255,6 +282,10 @@ public class IastAgent {
         public static int onEnter(
                 @Advice.Origin("#t.<init>#s") String fullMethodName,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
+            // 全局开关关闭时，直接跳过所有拦截逻辑
+            if (!MONITOR_ENABLED) {
+                return 0;
+            }
             int callId = globalCallCount.incrementAndGet();
             LogWriter.getInstance().info("[IAST Agent] [" + callId + "] === Intercepted method call: " + fullMethodName + " ===");
             LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Method: " + fullMethodName);
@@ -284,6 +315,10 @@ public class IastAgent {
         public static void onExit(
                 @Advice.Enter int callId,
                 @Advice.This(typing = Assigner.Typing.DYNAMIC) Object self) {
+            // callId为0说明开关关闭，直接跳过
+            if (callId == 0) {
+                return;
+            }
             if (self != null) {
                 LogWriter.getInstance().info("[IAST Agent] [" + callId + "] Constructed: " + self);
             }
