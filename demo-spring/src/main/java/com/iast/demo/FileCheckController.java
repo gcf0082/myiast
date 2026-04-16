@@ -1,7 +1,12 @@
 package com.iast.demo;
 
 import org.springframework.web.bind.annotation.*;
+
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.stream.Stream;
 
 @RestController
 @RequestMapping("/api")
@@ -24,5 +29,24 @@ public class FileCheckController {
         File file = new File(path);
         boolean exists = file.exists();
         return "File exists: " + exists;
+    }
+
+    @GetMapping("/list-dir")
+    public String listDir(@RequestParam String path) throws IOException {
+        try (Stream<java.nio.file.Path> s = Files.list(Paths.get(path))) {
+            return "entries: " + s.count();
+        }
+    }
+
+    @GetMapping("/echo")
+    public String echo(@RequestParam String msg,
+                       @RequestParam(defaultValue = "1") int times) {
+        return repeatMsg(msg, times);
+    }
+
+    private String repeatMsg(String msg, int times) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < times; i++) sb.append(msg);
+        return sb.toString();
     }
 }

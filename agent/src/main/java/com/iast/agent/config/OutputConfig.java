@@ -8,6 +8,7 @@ public class OutputConfig {
     private boolean returnVal = true;
     private boolean stacktrace = true;
     private int stacktraceDepth = 8;
+    private String eventsPath;
 
     public boolean isArgs() {
         return args;
@@ -39,5 +40,13 @@ public class OutputConfig {
 
     public void setStacktraceDepth(int stacktraceDepth) {
         this.stacktraceDepth = stacktraceDepth;
+    }
+
+    public String getEventsPath() {
+        return eventsPath;
+    }
+
+    public void setEventsPath(String eventsPath) {
+        this.eventsPath = eventsPath;
     }
 }

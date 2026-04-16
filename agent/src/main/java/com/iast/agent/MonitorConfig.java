@@ -22,6 +22,8 @@ import java.util.Properties;
 public class MonitorConfig {
     private static final Map<String, List<MethodRule>> monitorRules = new HashMap<>();
     private static final Map<String, String> classPluginMap = new HashMap<>();  // 类名 -> 插件名称
+    // 插件名 -> 该插件的所有规则配置块（已附带className/methods信息）
+    private static final Map<String, List<Map<String, Object>>> pluginConfigs = new HashMap<>();
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
@@ -117,6 +119,9 @@ public class MonitorConfig {
             outputReturn = outputConfig.isReturn();
             outputStacktrace = outputConfig.isStacktrace();
             stacktraceDepth = outputConfig.getStacktraceDepth();
+            if (outputConfig.getEventsPath() != null && !outputConfig.getEventsPath().isEmpty()) {
+                com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(outputConfig.getEventsPath());
+            }
         }
 
         // 解析监控规则
@@ -139,7 +144,15 @@ public class MonitorConfig {
                         pluginName = "LogPlugin";
                     }
                     classPluginMap.put(internalClassName, pluginName);
-                    
+
+                    // 聚合该规则的pluginConfig，附带className/methods，后续传给插件init()
+                    if (rule.getPluginConfig() != null && !rule.getPluginConfig().isEmpty()) {
+                        Map<String, Object> block = new HashMap<>(rule.getPluginConfig());
+                        block.putIfAbsent("className", className);
+                        block.putIfAbsent("methods", rule.getMethods());
+                        pluginConfigs.computeIfAbsent(pluginName, k -> new ArrayList<>()).add(block);
+                    }
+
                     LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods + " (plugin: " + pluginName + ")");
                 }
             }
@@ -237,6 +250,14 @@ public class MonitorConfig {
      */
     public static String getPluginName(String internalClassName) {
         return classPluginMap.getOrDefault(internalClassName, "LogPlugin");
+    }
+
+    /**
+     * 获取各插件聚合的规则配置列表
+     * 用于IastAgent.initPlugins()时传入plugin.init(config)
+     */
+    public static Map<String, List<Map<String, Object>>> getPluginConfigs() {
+        return pluginConfigs;
     }
 
     /**

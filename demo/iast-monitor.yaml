@@ -44,5 +44,18 @@ monitor:
       methods:
         - "service#*"
       plugin: RequestIdPlugin
-    
+
+    # 通用事件插件：YAML 配置驱动，JSONL 事件输出
+    - className: java.nio.file.Files
+      methods:
+        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+      plugin: CustomEventPlugin
+      pluginConfig:
+        id: java.nio.file.Files.list
+        my_params:
+          file_path: "params[0].toString()"
+        event: "file list | {file_path}"
+        event_type: file.list
+        event_level: info
+
 

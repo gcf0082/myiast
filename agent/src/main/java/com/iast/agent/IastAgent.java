@@ -32,6 +32,7 @@ public class IastAgent {
      */
     public static void premain(String agentArgs, Instrumentation inst) {
         LogWriter.getInstance().init();
+        com.iast.agent.plugin.event.EventWriter.getInstance().init();
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in pre-agent mode...");
         startAgent(agentArgs, inst);
     }
@@ -41,6 +42,7 @@ public class IastAgent {
      */
     public static void agentmain(String agentArgs, Instrumentation inst) {
         LogWriter.getInstance().init();
+        com.iast.agent.plugin.event.EventWriter.getInstance().init();
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in attach mode...");
         startAgent(agentArgs, inst);
     }
@@ -64,9 +66,6 @@ public class IastAgent {
         // 首次初始化，正常执行流程
         LogWriter.getInstance().info("[IAST Agent] Java version: " + System.getProperty("java.version"));
 
-        // 初始化插件
-        initPlugins();
-
         // 定位Agent jar路径并添加到bootstrap classpath
         File agentJarFile = findAgentJar();
         if (agentJarFile != null) {
@@ -78,8 +77,9 @@ public class IastAgent {
             }
         }
 
-        // 初始化配置，支持agent参数指定配置文件路径
+        // 先加载配置，再初始化插件（插件init需要MonitorConfig.getPluginConfigs()返回的聚合配置）
         MonitorConfig.init(agentArgs);
+        initPlugins();
 
         // 创建ClassFileLocator，确保ByteBuddy能找到Advice类的字节码
         ClassFileLocator locator;
@@ -191,20 +191,25 @@ public class IastAgent {
      * 初始化插件
      */
     private static void initPlugins() {
+        com.iast.agent.plugin.PluginManager pm = com.iast.agent.plugin.PluginManager.getInstance();
+        java.util.Map<String, java.util.List<java.util.Map<String, Object>>> allCfgs = MonitorConfig.getPluginConfigs();
+        registerPlugin(pm, "LogPlugin", new com.iast.agent.plugin.LogPlugin(), allCfgs);
+        registerPlugin(pm, "RequestIdPlugin", new com.iast.agent.plugin.RequestIdPlugin(), allCfgs);
+        registerPlugin(pm, "CustomEventPlugin", new com.iast.agent.plugin.CustomEventPlugin(), allCfgs);
+    }
+
+    private static void registerPlugin(com.iast.agent.plugin.PluginManager pm, String name,
+                                       com.iast.agent.plugin.IastPlugin plugin,
+                                       java.util.Map<String, java.util.List<java.util.Map<String, Object>>> allCfgs) {
         try {
-            // 注册默认日志插件
-            com.iast.agent.plugin.LogPlugin logPlugin = new com.iast.agent.plugin.LogPlugin();
-            logPlugin.init(new java.util.HashMap<>());
-            com.iast.agent.plugin.PluginManager.getInstance().registerPlugin("LogPlugin", logPlugin);
-            LogWriter.getInstance().info("[IAST Agent] Initialized default plugin: LogPlugin");
-            
-            // 注册请求跟踪插件
-            com.iast.agent.plugin.RequestIdPlugin requestIdPlugin = new com.iast.agent.plugin.RequestIdPlugin();
-            requestIdPlugin.init(new java.util.HashMap<>());
-            com.iast.agent.plugin.PluginManager.getInstance().registerPlugin("RequestIdPlugin", requestIdPlugin);
-            LogWriter.getInstance().info("[IAST Agent] Initialized plugin: RequestIdPlugin");
+            java.util.List<java.util.Map<String, Object>> defs = allCfgs.getOrDefault(name, java.util.Collections.emptyList());
+            java.util.Map<String, Object> cfg = new java.util.HashMap<>();
+            cfg.put("definitions", defs);
+            plugin.init(cfg);
+            pm.registerPlugin(name, plugin);
+            LogWriter.getInstance().info("[IAST Agent] Initialized plugin: " + name + " with " + defs.size() + " rule(s)");
         } catch (Exception e) {
-            LogWriter.getInstance().info("[IAST Agent] Failed to initialize plugins: " + e.getMessage());
+            LogWriter.getInstance().info("[IAST Agent] Failed to initialize plugin " + name + ": " + e.getMessage());
         }
     }
 

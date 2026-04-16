@@ -14,7 +14,7 @@ cleanup() {
         kill $OLD_PID 2>/dev/null
         rm -f $PID_FILE
     fi
-    pkill -f "demo-spring" 2>/dev/null
+    pkill -f "target/demo-spring-1.0.0.jar" 2>/dev/null
     sleep 0.5
 }
 
@@ -49,7 +49,7 @@ triggerFileCheck() {
 echo "========================================"
 echo "1. 首次挂载Agent，开启监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID config=../demo/iast-monitor.yaml
+cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID config=../demo-spring/iast-monitor.yaml
 sleep 5
 
 IAST_LOG="/tmp/iast-agent-$DEMO_PID.log"
@@ -72,7 +72,7 @@ fi
 echo "========================================"
 echo "2. 执行stop命令，停止监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID stop config=../demo/iast-monitor.yaml
+cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID stop config=../demo-spring/iast-monitor.yaml
 sleep 2
 
 triggerFileCheck
@@ -99,7 +99,7 @@ fi
 echo "========================================"
 echo "3. 执行start命令，重新开启监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID start config=../demo/iast-monitor.yaml
+cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID start config=../demo-spring/iast-monitor.yaml
 sleep 2
 
 START_COUNT1=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
@@ -161,11 +161,68 @@ fi
 echo "========================================"
 echo "✅ 请求ID跟踪功能测试通过！"
 echo "========================================"
+
+echo "========================================"
+echo "5. 测试 CustomEventPlugin JSONL 事件..."
+echo "========================================"
+EVENT_LOG="/tmp/iast-events-$DEMO_PID.jsonl"
+curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
+sleep 1
+if [ ! -f "$EVENT_LOG" ]; then
+    echo "❌ 事件日志文件不存在: $EVENT_LOG"
+    cleanup
+    exit 1
+fi
+LINE=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG" | tail -1)
+if [ -z "$LINE" ]; then
+    echo "❌ 未找到 java.nio.file.Files.list 事件"
+    echo "事件日志内容："
+    cat "$EVENT_LOG"
+    cleanup
+    exit 1
+fi
+echo "   事件行: $LINE"
+echo "$LINE" | grep -q '"event":"file list | /tmp"' \
+    || { echo "❌ 事件模板渲染不符合预期"; cleanup; exit 1; }
+echo "$LINE" | grep -q '"event_type":"file.list"' \
+    || { echo "❌ event_type 不符合预期"; cleanup; exit 1; }
+echo "$LINE" | grep -q '"event_level":"info"' \
+    || { echo "❌ event_level 不符合预期"; cleanup; exit 1; }
+echo "$LINE" | grep -q '"params":{"file_path":"/tmp"}' \
+    || { echo "❌ params 解析错误"; cleanup; exit 1; }
+echo "✅ CustomEventPlugin params[0] 表达式验证通过"
+
+echo "📝 验证 target / params[N] / return 表达式..."
+curl -s "http://127.0.0.1:8080/api/echo?msg=hi&times=3" > /dev/null
+sleep 1
+LINE2=$(grep '"id":"com.iast.demo.FileCheckController.repeatMsg"' "$EVENT_LOG" | tail -1)
+if [ -z "$LINE2" ]; then
+    echo "❌ 未找到 repeatMsg 事件"
+    cleanup
+    exit 1
+fi
+echo "   事件行: $LINE2"
+echo "$LINE2" | grep -q '"target_class":"FileCheckController"' \
+    || { echo "❌ target.getClass().getSimpleName() 表达式错误"; cleanup; exit 1; }
+echo "$LINE2" | grep -q '"msg":"hi"' \
+    || { echo "❌ params[0] 表达式错误"; cleanup; exit 1; }
+echo "$LINE2" | grep -q '"times":"3"' \
+    || { echo "❌ params[1].toString() 表达式错误"; cleanup; exit 1; }
+echo "$LINE2" | grep -q '"combined":"hihihi"' \
+    || { echo "❌ return 表达式错误"; cleanup; exit 1; }
+echo "$LINE2" | grep -q '"event":"repeatMsg | target=FileCheckController msg=hi times=3 -> hihihi"' \
+    || { echo "❌ 事件模板渲染错误"; cleanup; exit 1; }
+echo "$LINE2" | grep -q '"phase":"exit"' \
+    || { echo "❌ on:[exit] 阶段过滤错误"; cleanup; exit 1; }
+echo "✅ CustomEventPlugin target/params[N]/return 全部验证通过"
+
+echo "========================================"
 echo "✅ 所有测试通过！"
 echo "========================================"
 echo "📝 IAST日志文件：$IAST_LOG"
+echo "📝 事件日志文件：$EVENT_LOG"
 echo "📝 最后一个请求ID: $REQUEST_ID"
 
 cleanup
-rm -f $IAST_LOG 2>/dev/null
+#rm -f $IAST_LOG $EVENT_LOG 2>/dev/null
 echo "测试完成"
