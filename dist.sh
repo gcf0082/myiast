@@ -9,7 +9,7 @@ ROOT="$(pwd)"
 VERSION="${IAST_VERSION:-1.0.0}"
 NAME="iast-agent-${VERSION}"
 OUT="dist/${NAME}"
-SRC_DIR="agent/dist"
+SRC_DIR="agent"
 
 echo "==> 清理旧产物"
 rm -rf "dist/${NAME}" "dist/${NAME}.tar.gz"
@@ -19,7 +19,7 @@ echo "==> 构建 Agent jar"
 (cd agent && mvn clean package -DskipTests -q)
 
 echo "==> 拷贝发布文件"
-cp agent/target/iast-agent.jar "${OUT}/iast-agent.jar"
+cp agent/target/iast-agent.jar   "${OUT}/iast-agent.jar"
 cp "${SRC_DIR}/README.md"        "${OUT}/"
 cp "${SRC_DIR}/iast-monitor.yaml" "${OUT}/"
 cp "${SRC_DIR}/iast-start.sh"    "${OUT}/"
