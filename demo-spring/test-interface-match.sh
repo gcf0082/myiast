@@ -1,0 +1,252 @@
+#!/bin/bash
+# 验证 matchType=interface 的端到端行为。
+#
+# 覆盖两条路径：
+#   case A  includeFutureClasses=true  + premain  → Spring 启动后加载的 DispatcherServlet 等
+#                                                    应被接口规则 transform + 产生 service() 拦截日志
+#   case B  includeFutureClasses=false + premain  → 预装快照里没有 DispatcherServlet，
+#                                                    不应出现接口规则产生的 service() 拦截日志
+#
+# 通过 LogPlugin 在 /tmp/iast-agent-<pid>.log 的 "Method Call Intercepted: jakarta.servlet.http.HttpServlet.service"
+# 计数来判定。
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+SCRIPT_DIR="$(pwd)"
+AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
+APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
+
+[ -f "$AGENT_JAR" ] || { echo "❌ Agent jar 不存在: $AGENT_JAR (先到 agent/ 跑 mvn package)"; exit 1; }
+[ -f "$APP_JAR" ]   || { echo "❌ demo-spring jar 不存在: $APP_JAR (先到 demo-spring/ 跑 mvn package)"; exit 1; }
+
+TMP_DIR="$(mktemp -d -t iast-iftest-XXXX)"
+trap 'rc=$?; kill_demo; rm -rf "$TMP_DIR"; exit $rc' EXIT INT TERM
+
+DEMO_PID=""
+kill_demo() {
+    if [ -n "${DEMO_PID:-}" ] && kill -0 "$DEMO_PID" 2>/dev/null; then
+        kill "$DEMO_PID" 2>/dev/null || true
+        # 给 JVM 一点时间退出
+        for _ in 1 2 3 4 5; do
+            kill -0 "$DEMO_PID" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -9 "$DEMO_PID" 2>/dev/null || true
+    fi
+    DEMO_PID=""
+}
+
+write_config() {
+    # $1 = true | false ; $2 = premain delay (ms, defaults to 0 for fast tests)
+    local include_future="$1"
+    local delay_ms="${2:-0}"
+    local path="$TMP_DIR/config-${include_future}-d${delay_ms}.yaml"
+    cat > "$path" <<EOF
+output:
+  args: true
+  return: true
+  stacktrace: false
+  stacktraceDepth: 4
+
+monitor:
+  default:
+    includeFutureClasses: ${include_future}
+    premainDelayMs: ${delay_ms}
+  rules:
+    - className: jakarta.servlet.Servlet
+      matchType: interface
+      methods:
+        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+      plugin: LogPlugin
+EOF
+    echo "$path"
+}
+
+run_case() {
+    # $1 = human label, $2 = includeFutureClasses value
+    local label="$1"
+    local include_future="$2"
+    local config
+    config="$(write_config "$include_future")"
+    local stdout_log="$TMP_DIR/demo-${include_future}.stdout"
+
+    echo
+    echo "======================================================================"
+    echo "  CASE: $label  (includeFutureClasses=${include_future})"
+    echo "======================================================================"
+    echo "  config: $config"
+
+    # 启动 demo（premain 模式）
+    java -javaagent:"$AGENT_JAR=config=$config" -jar "$APP_JAR" \
+        > "$stdout_log" 2>&1 &
+    DEMO_PID=$!
+    echo "  demo pid: $DEMO_PID"
+
+    # 等 Tomcat 就绪（最多 45s）
+    local ready=0
+    for i in $(seq 1 90); do
+        if grep -q "Tomcat started on port" "$stdout_log" 2>/dev/null; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$DEMO_PID" 2>/dev/null; then
+            echo "❌ demo 进程提前退出"
+            tail -30 "$stdout_log"
+            return 1
+        fi
+        sleep 0.5
+    done
+    [ "$ready" -eq 1 ] || { echo "❌ Tomcat 45s 未就绪"; tail -30 "$stdout_log"; return 1; }
+    echo "  ✓ Tomcat 就绪"
+
+    # 触发几次 HTTP 请求；404 也会经过整条 servlet 调用链
+    for _ in 1 2 3; do
+        curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
+    done
+    sleep 1
+
+    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+    [ -f "$iast_log" ] || { echo "❌ 找不到 Agent 日志: $iast_log"; return 1; }
+
+    echo "  Agent log: $iast_log"
+    local interface_rule_cnt dispatcher_cnt service_hit_cnt
+    interface_rule_cnt=$(grep -cE "Interface rule: match all implementations of jakarta\.servlet\.Servlet" "$iast_log" || true)
+    dispatcher_cnt=$(grep -cE "Transformed: org\.springframework\.web\.servlet\.DispatcherServlet" "$iast_log" || true)
+    service_hit_cnt=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+
+    echo "  Interface 规则已装载行数: $interface_rule_cnt"
+    echo "  DispatcherServlet Transformed 次数: $dispatcher_cnt"
+    echo "  HttpServlet.service 拦截次数: $service_hit_cnt"
+
+    # 打印一条完整的拦截记录（含 this/args/return/duration），让开发者肉眼确认函数调用确实被 hook
+    if [ "$service_hit_cnt" -gt 0 ]; then
+        echo "  ---------- 示例拦截记录 ----------"
+        local first_line
+        first_line=$(grep -nE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" \
+                      | head -1 | cut -d: -f1)
+        if [ -n "$first_line" ]; then
+            awk -v s="$first_line" -v e=$((first_line + 7)) \
+                'NR>=s && NR<=e { print "    " $0 }' "$iast_log"
+        fi
+        echo "  ---------------------------------"
+    fi
+
+    kill_demo
+
+    # 断言
+    if [ "$interface_rule_cnt" -lt 1 ]; then
+        echo "❌ [$label] Agent 未登记 interface 规则"
+        return 1
+    fi
+
+    if [ "$include_future" = "true" ]; then
+        if [ "$dispatcher_cnt" -lt 1 ] || [ "$service_hit_cnt" -lt 1 ]; then
+            echo "❌ [$label] 期望命中 Servlet 调用链（DispatcherServlet 应被 transform 且 service 被拦截），但计数为 0"
+            return 1
+        fi
+        echo "✅ [$label] Servlet 调用链被接口规则成功拦截"
+    else
+        # premain 模式下 DispatcherServlet 一定是 agent 安装之后才加载的；
+        # includeFutureClasses=false 应把它排除在外，因此 service 拦截应为 0
+        if [ "$service_hit_cnt" -ne 0 ]; then
+            echo "❌ [$label] 期望 0 次 service 拦截（开关 OFF），实际 $service_hit_cnt 次 —— 开关失效"
+            return 1
+        fi
+        echo "✅ [$label] 开关 OFF 生效：后加载的 Servlet 实现未被拦截"
+    fi
+}
+
+run_case "A. 开关 ON (premain 捕获未来加载的 Servlet)"  "true"
+run_case "B. 开关 OFF (premain 下不覆盖未来加载的 Servlet)" "false"
+
+run_delay_case() {
+    # 验证 premainDelayMs：启动后立即访问不应被拦截；延迟到期后再访问应被拦截
+    local include_future="true"
+    local delay_ms=6000
+    local config
+    config="$(write_config "$include_future" "$delay_ms")"
+    local stdout_log="$TMP_DIR/demo-delay.stdout"
+
+    echo
+    echo "======================================================================"
+    echo "  CASE: C. premain 延迟 install (premainDelayMs=${delay_ms})"
+    echo "======================================================================"
+    echo "  config: $config"
+
+    java -javaagent:"$AGENT_JAR=config=$config" -jar "$APP_JAR" \
+        > "$stdout_log" 2>&1 &
+    DEMO_PID=$!
+    echo "  demo pid: $DEMO_PID"
+
+    local ready=0
+    for i in $(seq 1 90); do
+        if grep -q "Tomcat started on port" "$stdout_log" 2>/dev/null; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$DEMO_PID" 2>/dev/null; then
+            echo "❌ demo 进程提前退出"
+            tail -30 "$stdout_log"
+            return 1
+        fi
+        sleep 0.5
+    done
+    [ "$ready" -eq 1 ] || { echo "❌ Tomcat 未就绪"; tail -30 "$stdout_log"; return 1; }
+    echo "  ✓ Tomcat 就绪"
+
+    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+    [ -f "$iast_log" ] || { echo "❌ 找不到 Agent 日志: $iast_log"; return 1; }
+
+    # 确认启动日志里看到了 "Bytecode install deferred"
+    if ! grep -q "Bytecode install deferred by ${delay_ms}ms" "$iast_log"; then
+        echo "❌ Agent 未打印 delay 日志"
+        return 1
+    fi
+    echo "  ✓ Agent 打印了 'Bytecode install deferred by ${delay_ms}ms'"
+
+    # 在延迟期间请求（应无拦截）
+    curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
+    sleep 1
+    local during_hits
+    during_hits=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+    echo "  延迟期间拦截次数: $during_hits"
+    if [ "$during_hits" -ne 0 ]; then
+        echo "❌ 延迟生效前不应有拦截（实际 $during_hits）"
+        return 1
+    fi
+
+    # 等延迟到期 + 一点 buffer
+    local wait_s=$((delay_ms / 1000 + 3))
+    echo "  等 ${wait_s}s 让延迟到期..."
+    sleep "$wait_s"
+
+    if ! grep -q "Building AgentBuilder and installing transformers" "$iast_log"; then
+        echo "❌ install 未触发"
+        return 1
+    fi
+    echo "  ✓ install 已触发"
+
+    # 延迟后再请求，应该能看到拦截
+    curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
+    curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
+    sleep 1
+    local after_hits
+    after_hits=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+    echo "  延迟到期后拦截次数: $after_hits"
+
+    kill_demo
+
+    if [ "$after_hits" -lt 1 ]; then
+        echo "❌ install 之后仍未拦截 service() 调用"
+        return 1
+    fi
+    echo "✅ [CASE C] premain 延迟 install 按预期工作"
+}
+
+run_delay_case
+
+echo
+echo "======================================================================"
+echo "  全部用例通过 ✅"
+echo "======================================================================"

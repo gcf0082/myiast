@@ -25,6 +25,12 @@ public class MonitorConfig {
     private static final Map<String, List<String>> classPluginMap = new HashMap<>();
     // 插件名 -> 该插件的所有规则配置块（已附带className/methods信息）
     private static final Map<String, List<Map<String, Object>>> pluginConfigs = new HashMap<>();
+    // internal className -> matchType（"exact" 或 "interface"），默认缺省视为 "exact"
+    private static final Map<String, String> classMatchType = new HashMap<>();
+    // 全局开关：matchType=interface 时，是否把安装后新加载的实现类也纳入监控
+    private static volatile boolean includeFutureClasses = false;
+    // premain 模式下字节码 install 的延迟毫秒数，默认 1 分钟
+    private static volatile long premainDelayMs = 60_000L;
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
@@ -125,6 +131,20 @@ public class MonitorConfig {
             }
         }
 
+        // 解析全局 default 配置
+        if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getDefault() != null) {
+            com.iast.agent.config.MonitorDefaultConfig defCfg = rootConfig.getMonitor().getDefault();
+            includeFutureClasses = defCfg.isIncludeFutureClasses();
+            if (includeFutureClasses) {
+                LogWriter.getInstance().info("[IAST Agent] includeFutureClasses=true: interface rules will also match classes loaded after agent install");
+            }
+            long d = defCfg.getPremainDelayMs();
+            premainDelayMs = Math.max(0L, d);
+            if (premainDelayMs != 60_000L) {
+                LogWriter.getInstance().info("[IAST Agent] premainDelayMs override: " + premainDelayMs + "ms");
+            }
+        }
+
         // 解析监控规则
         if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getRules() != null) {
             for (MonitorRuleConfig rule : rootConfig.getMonitor().getRules()) {
@@ -149,6 +169,16 @@ public class MonitorConfig {
                             }
                         }
                         if (!dup) existing.add(m);
+                    }
+
+                    // 记录该类的 matchType（"exact"/"interface"）。同一个 className 多条规则冲突时以先声明的为准并 warn
+                    String ruleMatchType = normalizeMatchType(rule.getMatchType());
+                    String existingMatchType = classMatchType.get(internalClassName);
+                    if (existingMatchType == null) {
+                        classMatchType.put(internalClassName, ruleMatchType);
+                    } else if (!existingMatchType.equals(ruleMatchType)) {
+                        LogWriter.getInstance().info("[IAST Agent] Warning: conflicting matchType for " + className
+                                + " (existing=" + existingMatchType + ", new=" + ruleMatchType + "), keeping existing");
                     }
 
                     // 存储插件名称，默认使用LogPlugin；同一个类可以挂多个插件，按YAML声明顺序排列
@@ -287,6 +317,65 @@ public class MonitorConfig {
      */
     public static Map<String, List<Map<String, Object>>> getPluginConfigs() {
         return pluginConfigs;
+    }
+
+    /**
+     * 全局开关：matchType=interface 时是否也监控安装后新加载的实现类
+     */
+    public static boolean isIncludeFutureClasses() {
+        return includeFutureClasses;
+    }
+
+    /**
+     * premain 模式下字节码 install 的延迟毫秒数。默认 60_000（1 分钟）；0 表示立即 install。
+     * agentmain（attach）模式不使用该值。
+     */
+    public static long getPremainDelayMs() {
+        return premainDelayMs;
+    }
+
+    /**
+     * 查询某个 className（internal 格式）配置的 matchType
+     * 未显式配置时返回 "exact"，兼容老规则
+     */
+    public static String getMatchType(String internalClassName) {
+        return classMatchType.getOrDefault(internalClassName, "exact");
+    }
+
+    /**
+     * 把接口规则命中到的具体类路由到接口规则声明的插件列表。
+     * 在 ByteBuddy transform 阶段调用：advice 的 dispatchToPlugins 以具体类的 internal name 查 classPluginMap，
+     * 若接口规则没把具体类挂到 map 里，运行期就会查不到插件导致事件丢失。
+     *
+     * @param concreteInternalName  具体实现类的 internal name（斜杠形式）
+     * @param interfaceInternalName 声明规则的接口/父类 internal name
+     */
+    public static void linkConcreteToPlugins(String concreteInternalName, String interfaceInternalName) {
+        if (concreteInternalName == null || interfaceInternalName == null) {
+            return;
+        }
+        if (concreteInternalName.equals(interfaceInternalName)) {
+            return; // 接口/抽象类本身已经在 map 里，无需自链
+        }
+        List<String> interfacePlugins = classPluginMap.get(interfaceInternalName);
+        if (interfacePlugins == null || interfacePlugins.isEmpty()) {
+            return;
+        }
+        List<String> concretePlugins = classPluginMap.computeIfAbsent(concreteInternalName, k -> new ArrayList<>());
+        for (String p : interfacePlugins) {
+            if (!concretePlugins.contains(p)) {
+                concretePlugins.add(p);
+            }
+        }
+    }
+
+    private static String normalizeMatchType(String raw) {
+        if (raw == null) return "exact";
+        String v = raw.trim().toLowerCase();
+        if (v.isEmpty()) return "exact";
+        if ("interface".equals(v) || "exact".equals(v)) return v;
+        LogWriter.getInstance().info("[IAST Agent] Warning: unknown matchType '" + raw + "', falling back to 'exact'");
+        return "exact";
     }
 
     /**

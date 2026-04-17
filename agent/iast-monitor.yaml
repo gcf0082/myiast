@@ -11,6 +11,18 @@ output:
   # eventsPath: /tmp/iast-events.jsonl   # 可选，默认 /tmp/iast-events-<pid>.jsonl
 
 monitor:
+  default:
+    # 全局开关：matchType=interface 规则是否覆盖 Agent 安装后新加载的实现类。
+    # 默认 false —— 只拦截安装瞬间已加载的实现类；避免意外扩大拦截面。
+    # 注意 premain 模式：Spring 容器在 Agent 之后启动，多数 Servlet 实现都属于"安装后新加载"，
+    # 若要覆盖 DispatcherServlet 之类，请显式设置 true。
+    includeFutureClasses: false
+
+    # premain 模式下延迟多少毫秒再 install 字节码（agentmain/attach 模式忽略此项）。
+    # 目的：把 retransform + 逐类拦截的开销推迟到业务启动之后，避免拖慢应用启动。
+    # 默认 60000（1 分钟）；设为 0 表示 JVM 启动时立即 install（老行为）。
+    # 延迟期间 Agent 已加载配置/插件，只是暂不拦截方法；到期后会一次性 retransform 已加载的类。
+    premainDelayMs: 60000
   rules:
     # ---------- 示例 1：File/Files 基础拦截 ----------
     - className: java.io.File
@@ -60,4 +72,17 @@ monitor:
     - className: java.nio.file.Files
       methods:
         - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+      plugin: LogPlugin
+
+    # ---------- 示例 4：接口匹配 (matchType: interface) ----------
+    # 把规则挂到接口上，拦截所有已加载的 *具体实现类*（排除接口/抽象类本身）。
+    # 新加载的实现类是否也拦截，由上方 monitor.default.includeFutureClasses 全局控制。
+    #
+    # 监控所有 javax.servlet.Servlet 实现的 service(ServletRequest, ServletResponse) 调用。
+    # 注意：javax.servlet.* 是 Jakarta EE 8 及之前的命名空间（Tomcat 9 / Spring Boot 2 等）；
+    # Jakarta EE 9+（Tomcat 10 / Spring Boot 3）用的是 jakarta.servlet.*，需要把 javax 全部换成 jakarta。
+    - className: javax.servlet.Servlet
+      matchType: interface
+      methods:
+        - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
       plugin: LogPlugin

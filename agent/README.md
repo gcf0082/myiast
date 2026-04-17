@@ -104,8 +104,12 @@ output:
   stacktraceDepth: 8
 
 monitor:
+  default:
+    includeFutureClasses: false   # 见"接口级监控"一节
+    premainDelayMs: 60000         # 见"premain 延迟 install"一节
   rules:
     - className: <FQCN>
+      matchType: exact                  # exact | interface，默认 exact
       methods:
         - "<methodName>#<descriptor>"   # 具体签名，"<init>" 为构造函数
         - "<methodName>#*"               # 通配任意签名
@@ -155,6 +159,68 @@ pluginConfig:
   on: [enter]                                   # 触发阶段：enter/exit/exception，默认 enter
 ```
 
+## 接口级监控（matchType: interface）
+
+规则的 `className` 写在接口或抽象父类上，Agent 会展开到该接口 / 父类的**所有具体实现类**，
+同时 hook 抽象父类里实际声明方法体的那层（典型如 `jakarta.servlet.Servlet` → 真正执行的
+是 `HttpServlet.service(ServletRequest, ServletResponse)`；只写具体子类拦不到，因为方法
+是继承来的）。
+
+```yaml
+monitor:
+  default:
+    includeFutureClasses: false   # 是否把"Agent install 之后"才加载的实现类也纳入监控
+  rules:
+    # 监控所有 jakarta.servlet.Servlet 实现的 service(ServletRequest,ServletResponse)
+    - className: jakarta.servlet.Servlet
+      matchType: interface
+      methods:
+        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+      plugin: LogPlugin
+
+    # 老写法（exact）还是可用，两种可以混合
+    - className: java.nio.file.Files
+      methods: ["exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"]
+      plugin: LogPlugin
+```
+
+`includeFutureClasses` 全局开关：
+
+| 模式 \ 开关 | `false`（默认） | `true` |
+|-------------|----------------|--------|
+| **attach / agentmain** | 挂进去那一刻已加载的实现类全部 hook；之后动态加载的实现类 **不** 管。适合"拍快照"式审计，最安全 | 之后加载的实现类也一起 hook |
+| **premain** | 只 hook install 时已加载的类；Spring 启动后的 `DispatcherServlet` 等仍会被覆盖——因为下面的 `premainDelayMs` 把快照推迟到业务启动之后 | 无差别覆盖所有实现类（含后加载的） |
+
+`javax.servlet.*` 和 `jakarta.servlet.*` 是两套独立命名空间（Servlet 4 vs 5+），不互相继承；
+目标容器跑哪个就配哪个，要同时覆盖两套就各写一条规则。
+
+## premain 延迟 install（premainDelayMs）
+
+premain 模式下 Agent 跟 JVM 一起起来，随后的 retransform 和逐类拦截会给业务启动加明显
+开销。把 `monitor.default.premainDelayMs` 设成非 0 毫秒，Agent 启动时只做配置加载 / 插件
+初始化，字节码 install 会被丢到后台 daemon 线程里，等延迟到期再一次性做完。
+
+```yaml
+monitor:
+  default:
+    premainDelayMs: 60000   # 默认 1 分钟；0 = 关闭延迟，恢复老行为
+```
+
+语义：
+- `premain` 方法本身不阻塞，JVM 启动没有等待。
+- 延迟期间 Agent 已加载 YAML、初始化插件，但**不拦截任何方法**，应用此时的调用完全等同于无 Agent。
+- 延迟到期后，Agent 在后台线程里 build AgentBuilder → `installOn(inst)`，JVM 会对已加载的类做一次
+  retransform，从此点开始拦截生效。
+- `includeFutureClasses=false` 的快照也是在"延迟到期那一刻"取的——于是 premain 模式下这条开关
+  才变得真正有用（能覆盖应用启动期加载的类，却排除运行期动态加载的插件 / JSP / OSGi bundle 等）。
+- `agentmain` / attach 模式忽略此配置，始终立即 install。
+
+日志可以用这两行判断延迟链路：
+```
+[IAST Agent] Bytecode install deferred by 60000ms to protect app startup (premain mode). ...
+[IAST Agent] Building AgentBuilder and installing transformers...   # 到期后才出现
+```
+
 ## JSONL 事件格式
 
 每行一个 JSON 对象：
@@ -175,6 +241,8 @@ tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.event_type == "file.list")'
 | `Target process does not support attach` | 目标 JVM 加了 `-XX:+DisableAttachMechanism`，或 attach 进程与目标不是同一 UID |
 | iast-start.sh 挂后没日志 | 查 `/tmp/iast-agent-<pid>.log` 有无 `Loaded monitor rule: ...`；无即配置路径错了 |
 | 事件日志空 | `/tmp/iast-agent-<pid>.log` 里看 `[CustomEventPlugin] loaded N definition(s)`；N=0 说明 YAML 没写 CustomEventPlugin 规则 |
+| premain 启动后长时间没拦截 | 正常：默认 `premainDelayMs=60000` 会让字节码 install 延迟 1 分钟。日志里找 `Bytecode install deferred by ...`；立即生效把它设 `0` |
+| `matchType: interface` 配了但没命中 | (1) premain 模式下应用还没起来就挂 Agent，把 `includeFutureClasses: true` 打开或调大 `premainDelayMs` 让快照更完整；(2) 方法是从抽象父类继承来、子类没 override —— 这时 hook 会发生在父类而非子类，属于正常 |
 | JRE 环境 attach 失败 | `-DiastAttach=fallback` 强走 byte-buddy-agent；或安装 jattach |
 | Windows JRE | 需要 byte-buddy-agent 路径（自动），或装 jattach Windows 版 |
 

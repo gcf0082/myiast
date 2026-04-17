@@ -11,6 +11,7 @@ public class MonitorRuleConfig {
     private List<String> methods;
     private String plugin;              // 插件名称
     private Map<String, Object> pluginConfig;  // 插件配置
+    private String matchType = "exact"; // 匹配模式：exact（精确类名）| interface（接口，覆盖所有具体实现类）
 
     public String getClassName() {
         return className;
@@ -42,5 +43,13 @@ public class MonitorRuleConfig {
 
     public void setPluginConfig(Map<String, Object> pluginConfig) {
         this.pluginConfig = pluginConfig;
+    }
+
+    public String getMatchType() {
+        return matchType;
+    }
+
+    public void setMatchType(String matchType) {
+        this.matchType = matchType;
     }
 }

@@ -11,7 +11,9 @@ import net.bytebuddy.matcher.ElementMatchers;
 
 import java.io.File;
 import java.lang.instrument.Instrumentation;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarFile;
 
@@ -34,7 +36,7 @@ public class IastAgent {
         LogWriter.getInstance().init();
         com.iast.agent.plugin.event.EventWriter.getInstance().init();
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in pre-agent mode...");
-        startAgent(agentArgs, inst);
+        startAgent(agentArgs, inst, true);
     }
 
     /**
@@ -44,13 +46,14 @@ public class IastAgent {
         LogWriter.getInstance().init();
         com.iast.agent.plugin.event.EventWriter.getInstance().init();
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in attach mode...");
-        startAgent(agentArgs, inst);
+        startAgent(agentArgs, inst, false);
     }
 
     /**
      * 公共Agent启动逻辑，供两种模式复用
+     * @param isPremain true=premain（JVM 启动时），false=agentmain（attach 到运行中进程）
      */
-    private static void startAgent(String agentArgs, Instrumentation inst) {
+    private static void startAgent(String agentArgs, Instrumentation inst, boolean isPremain) {
         // 如果已经初始化，仅处理开关指令
         if (INITIALIZED) {
             LogWriter.getInstance().info("[IAST Agent] Already initialized, processing control command: " + agentArgs);
@@ -97,6 +100,48 @@ public class IastAgent {
         }
         final ClassFileLocator adviceLocator = locator;
 
+        // 决定字节码 install 的时机：premain 模式下默认延迟 1 分钟，避免 retransform + 逐类拦截拖慢业务启动；
+        // agentmain 模式总是立即 install（典型场景是对已经跑起来的进程做 hook，没有启动期开销顾虑）。
+        long delayMs = isPremain ? MonitorConfig.getPremainDelayMs() : 0L;
+
+        Runnable installTask = () -> buildAndInstall(inst, adviceLocator);
+
+        if (delayMs > 0L) {
+            final long delayMsFinal = delayMs;
+            Thread installer = new Thread(() -> {
+                try {
+                    Thread.sleep(delayMsFinal);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    LogWriter.getInstance().info("[IAST Agent] Delayed install thread interrupted, skipping install");
+                    return;
+                }
+                try {
+                    installTask.run();
+                } catch (Throwable t) {
+                    LogWriter.getInstance().info("[IAST Agent] Delayed install failed: " + t);
+                }
+            }, "iast-agent-delayed-install");
+            installer.setDaemon(true);
+            installer.start();
+            LogWriter.getInstance().info("[IAST Agent] Bytecode install deferred by " + delayMs
+                    + "ms to protect app startup (premain mode). Set monitor.default.premainDelayMs: 0 to disable.");
+        } else {
+            installTask.run();
+        }
+
+        // 标记初始化完成：后续 agentmain("start"/"stop") 能进入开关处理分支。
+        // 这里先于实际 install 标记是安全的——advice 的 MONITOR_ENABLED 检查独立于 INITIALIZED。
+        INITIALIZED = true;
+    }
+
+    /**
+     * 真正构建 AgentBuilder 并 installOn(inst)。
+     * 在 premain 延迟模式下被异步 daemon 线程调用。
+     */
+    private static void buildAndInstall(Instrumentation inst, ClassFileLocator adviceLocator) {
+        LogWriter.getInstance().info("[IAST Agent] Building AgentBuilder and installing transformers...");
+
         // 构建ByteBuddy Agent
         AgentBuilder agentBuilder = new AgentBuilder.Default()
                 .ignore(ElementMatchers.nameStartsWith("net.bytebuddy."))
@@ -121,13 +166,38 @@ public class IastAgent {
                     }
                 });
 
+        // 若存在任何 matchType=interface 且全局开关为 OFF 的规则，预先取已加载类名快照，
+        // 用 NameInSetMatcher 过滤掉"Agent 安装后新加载"的实现类
+        Set<String> preInstallLoadedNames = null;
+
         // 为每个监控类添加规则
         List<String> monitoredClasses = MonitorConfig.getMonitoredClasses();
         for (String internalClassName : monitoredClasses) {
             String className = internalClassName.replace('/', '.');
             List<MonitorConfig.MethodRule> methodRules = MonitorConfig.getMethodRules(internalClassName);
+            String matchType = MonitorConfig.getMatchType(internalClassName);
+            boolean isInterfaceRule = "interface".equals(matchType);
 
-            ElementMatcher.Junction<TypeDescription> typeMatcher = ElementMatchers.named(className);
+            ElementMatcher.Junction<TypeDescription> typeMatcher;
+            if (isInterfaceRule) {
+                // 接口/父类规则：匹配所有实现类 + 抽象父类（保留抽象类是为了 hook 那些"声明在抽象基类里、
+                // 具体子类只靠继承不 override"的方法，典型如 HttpServlet.service）。只排除接口本身和规则类自身。
+                typeMatcher = ElementMatchers.hasSuperType(ElementMatchers.named(className))
+                        .and(ElementMatchers.not(ElementMatchers.isInterface()))
+                        .and(ElementMatchers.not(ElementMatchers.named(className)));
+                if (!MonitorConfig.isIncludeFutureClasses()) {
+                    if (preInstallLoadedNames == null) {
+                        preInstallLoadedNames = snapshotLoadedClassNames(inst);
+                        LogWriter.getInstance().info("[IAST Agent] Snapshot of loaded classes taken ("
+                                + preInstallLoadedNames.size() + " classes); future-loaded classes won't match interface rules");
+                    }
+                    typeMatcher = typeMatcher.and(new com.iast.agent.matcher.NameInSetMatcher<>(preInstallLoadedNames));
+                }
+                LogWriter.getInstance().info("[IAST Agent] Interface rule: match all implementations of " + className
+                        + " (includeFutureClasses=" + MonitorConfig.isIncludeFutureClasses() + ")");
+            } else {
+                typeMatcher = ElementMatchers.named(className);
+            }
 
             // 分离构造函数规则和普通方法规则
             ElementMatcher.Junction<MethodDescription> ctorMatcher = null;
@@ -158,14 +228,20 @@ public class IastAgent {
                  LogWriter.getInstance().info("[IAST Agent] Adding monitor: " + className + "." + rule.getMethodName() + "#" + rule.getDescriptor());
              }
 
+            final boolean linkConcrete = isInterfaceRule;
+            final String interfaceInternalName = internalClassName;
+
             // 应用普通方法Advice
             if (methodMatcher != null) {
                 final ElementMatcher.Junction<MethodDescription> fm = methodMatcher;
                 agentBuilder = agentBuilder
                         .type(typeMatcher)
-                        .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
-                                builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(fm))
-                        );
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> {
+                            if (linkConcrete) {
+                                MonitorConfig.linkConcreteToPlugins(typeDescription.getInternalName(), interfaceInternalName);
+                            }
+                            return builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(fm));
+                        });
             }
 
             // 应用构造函数Advice
@@ -173,18 +249,19 @@ public class IastAgent {
                 final ElementMatcher.Junction<MethodDescription> fc = ctorMatcher;
                 agentBuilder = agentBuilder
                         .type(typeMatcher)
-                        .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
-                                builder.visit(Advice.to(ConstructorMonitorAdvice.class, adviceLocator).on(fc))
-                        );
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> {
+                            if (linkConcrete) {
+                                MonitorConfig.linkConcreteToPlugins(typeDescription.getInternalName(), interfaceInternalName);
+                            }
+                            return builder.visit(Advice.to(ConstructorMonitorAdvice.class, adviceLocator).on(fc));
+                        });
             }
         }
 
         // 安装Agent
         agentBuilder.installOn(inst);
-            
+
         LogWriter.getInstance().info("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
-        // 标记初始化完成
-        INITIALIZED = true;
     }
 
     /**
@@ -211,6 +288,19 @@ public class IastAgent {
         } catch (Exception e) {
             LogWriter.getInstance().info("[IAST Agent] Failed to initialize plugin " + name + ": " + e.getMessage());
         }
+    }
+
+    /**
+     * 取当前所有已加载类的 FQCN 快照。
+     * 用于 matchType=interface 且 includeFutureClasses=false 时做 "安装前已加载" 过滤。
+     */
+    private static Set<String> snapshotLoadedClassNames(Instrumentation inst) {
+        Class<?>[] all = inst.getAllLoadedClasses();
+        Set<String> names = new HashSet<>(all.length);
+        for (Class<?> c : all) {
+            names.add(c.getName());
+        }
+        return names;
     }
 
     /**

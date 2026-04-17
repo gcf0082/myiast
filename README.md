@@ -7,7 +7,9 @@ Java Agent 实现的交互式应用安全测试工具，支持监控任意JDK方
 - ✅ 支持监控任意JDK类/方法调用
 - ✅ 配置化管理监控规则，无需修改代码
 - ✅ 支持方法名、参数、返回值、调用栈全链路采集
-- ✅ 纯pre-agent模式，无需修改应用代码
+- ✅ 支持 pre-agent 与 attach 两种挂载模式
+- ✅ **接口级监控**：`matchType: interface` 一行规则覆盖所有实现类（含后加载的，可开关）
+- ✅ **premain 启动友好**：默认延迟 1 分钟再 install 字节码，业务启动期零拦截开销
 - ✅ 完全兼容Java 8 ~ Java 21
 - ✅ 无需额外启动参数（无需`-Xbootclasspath/a`）
 
@@ -21,13 +23,26 @@ cd agent
 构建成功后会在`agent/target/`目录下生成`iast-agent.jar`
 
 ### 2. 配置监控规则
-修改`iast-monitor.properties`配置文件，添加需要监控的方法：
-```properties
-# 配置格式：monitor.<全类名> = <方法1名>#<方法1描述符>,<方法2名>#<方法2描述符>
-monitor.java.io.File = exists#()Z,getAbsolutePath#()Ljava/lang/String;
-monitor.java.net.Socket = connect#(Ljava/net/SocketAddress;I)V
-monitor.java.util.ArrayList = add#(Ljava/lang/Object;)Z
+推荐用 YAML（`iast-monitor.yaml`），老 `.properties` 格式仍然兼容：
+
+```yaml
+monitor:
+  default:
+    includeFutureClasses: false   # 接口规则是否覆盖后加载的实现类
+    premainDelayMs: 60000         # premain 模式延迟 install 字节码（毫秒），0=立即
+  rules:
+    # 精确类名
+    - className: java.io.File
+      methods: ["exists#()Z", "getAbsolutePath#()Ljava/lang/String;"]
+      plugin: LogPlugin
+    # 接口级：所有实现 jakarta.servlet.Servlet 的具体类 + 声明方法体的抽象父类都会被 hook
+    - className: jakarta.servlet.Servlet
+      matchType: interface
+      methods: ["service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"]
+      plugin: LogPlugin
 ```
+
+字段详解看 [`agent/README.md`](agent/README.md)。
 
 ### 3. 两种使用模式
 
@@ -81,7 +96,8 @@ java -jar iast-agent.jar <目标进程PID> config=/path/to/custom-config.propert
 │   ├── src/main/java/com/iast/demo/FileCheckController.java   # /api/* 端点（含反射调用用例）
 │   ├── iast-monitor.yaml          # 监控配置
 │   ├── run-premain.sh             # -javaagent 启动示例
-│   └── test-monitor-switch.sh     # 7 步回归测试
+│   ├── test-monitor-switch.sh     # 7 步回归测试
+│   └── test-interface-match.sh    # 接口级监控 + premainDelayMs 端到端测试（3 个用例）
 ├── dist.sh                 # 发布打包脚本
 └── README.md               # 项目说明文档
 ```
