@@ -19,23 +19,18 @@ public final class JdkAttacher {
     private JdkAttacher() {}
 
     public static void attach(String pid, String agentArgs, String agentJarPath) throws Exception {
-        boolean pidExists = false;
+        // list() 只用于友好输出进程名称，结果不影响后续 attach——有些环境
+        // （容器、tmpdir 非默认路径、-XX:-UsePerfData）下 list 不返回目标进程，但 attach 依然可行
         try {
             List<VirtualMachineDescriptor> vms = VirtualMachine.list();
             for (VirtualMachineDescriptor vmd : vms) {
                 if (vmd.id().equals(pid)) {
-                    pidExists = true;
                     System.out.println("[IAST AttachTool] Found target process: PID=" + pid + ", " + vmd.displayName());
                     break;
                 }
             }
         } catch (Throwable t) {
-            // VirtualMachine.list 在某些受限环境可能抛异常，直接跳过pid存在性检查
-            pidExists = true;
-        }
-
-        if (!pidExists) {
-            throw new IOException("PID " + pid + " not found in attachable VM list");
+            // 忽略，直接尝试 attach
         }
 
         System.out.println("[IAST AttachTool] Attaching to process " + pid + " via jdk.attach...");
