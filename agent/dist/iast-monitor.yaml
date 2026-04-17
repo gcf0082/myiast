@@ -1,0 +1,63 @@
+# ============================================
+# IAST Agent 监控配置（YAML）
+# 字段说明详见 README.md
+# ============================================
+
+output:
+  args: true                 # 拦截日志是否打印入参
+  return: true               # 是否打印返回值
+  stacktrace: true           # 是否打印调用栈
+  stacktraceDepth: 8
+  # eventsPath: /tmp/iast-events.jsonl   # 可选，默认 /tmp/iast-events-<pid>.jsonl
+
+monitor:
+  rules:
+    # ---------- 示例 1：File/Files 基础拦截 ----------
+    - className: java.io.File
+      methods:
+        - "<init>#*"
+        - "exists#()Z"
+        - "getAbsolutePath#()Ljava/lang/String;"
+      plugin: LogPlugin
+
+    - className: java.nio.file.Files
+      methods:
+        - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
+      plugin: LogPlugin
+
+    - className: java.net.Socket
+      methods:
+        - "connect#*"
+      plugin: LogPlugin
+
+    - className: java.lang.Runtime
+      methods:
+        - "exec#*"
+      plugin: LogPlugin
+
+    # ---------- 示例 2：Servlet 请求 ID 跟踪 ----------
+    # 为每个 HTTP 请求生成 UUID，写到 ThreadLocal 和响应头 X-Request-Id
+    - className: jakarta.servlet.http.HttpServlet
+      methods:
+        - "service#*"
+      plugin: RequestIdPlugin
+
+    # ---------- 示例 3：CustomEventPlugin 结构化事件 ----------
+    # 同一方法可挂多个插件（见下一条，同时走 LogPlugin）
+    - className: java.nio.file.Files
+      methods:
+        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+      plugin: CustomEventPlugin
+      pluginConfig:
+        id: java.nio.file.Files.list
+        my_params:
+          file_path: "params[0].toString()"
+        event: "file list | {file_path}"
+        event_type: file.list
+        event_level: info
+        # on: [enter]          # 默认 enter；可填 enter/exit/exception 组合
+
+    - className: java.nio.file.Files
+      methods:
+        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+      plugin: LogPlugin
