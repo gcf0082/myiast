@@ -6,13 +6,15 @@ import java.lang.reflect.Method;
 /**
  * Attach 模式挂载工具——跨环境通用（JDK / JRE，Linux / macOS / Windows）。
  *
- * 自动探测当前 JVM 是否含 jdk.attach 模块：
- *   - 有：走 JdkAttacher（com.sun.tools.attach.VirtualMachine）
- *   - 无：走 ByteBuddyAgentAttacher（byte-buddy-agent 封装的跨平台实现，
- *           Linux/macOS 走 UNIX Socket，Windows 走 JNA DLL 注入）
+ * 自动模式优先级：
+ *   1. jdk.attach 模块可用 → JdkAttacher（同进程，最简单）
+ *   2. PATH 里有 jattach → JattachAttacher（外部纯 C 二进制，无 JNA 开销）
+ *   3. 兜底 → ByteBuddyAgentAttacher（byte-buddy-agent 封装的跨平台实现，
+ *      Linux/macOS 走 UNIX Socket，Windows 走 JNA DLL 注入）
  *
  * 强制模式（调试用）：
  *   -DiastAttach=jdk        强制走 jdk.attach
+ *   -DiastAttach=jattach    强制走 jattach 外部二进制
  *   -DiastAttach=fallback   强制走 byte-buddy-agent（JDK 上也能用，便于验证 JRE 路径）
  *   -DiastAttach=socket     历史别名，等同 fallback
  */
@@ -28,15 +30,25 @@ public class AttachTool {
         String agentJarPath = resolveAgentJarPath();
 
         String mode = System.getProperty("iastAttach", "auto");
-        boolean forceFallback = "fallback".equalsIgnoreCase(mode) || "socket".equalsIgnoreCase(mode);
         boolean forceJdk = "jdk".equalsIgnoreCase(mode);
-        boolean useJdk = forceJdk || (!forceFallback && isJdkAttachAvailable());
+        boolean forceJattach = "jattach".equalsIgnoreCase(mode);
+        boolean forceFallback = "fallback".equalsIgnoreCase(mode) || "socket".equalsIgnoreCase(mode);
 
         try {
-            if (useJdk) {
+            if (forceJdk) {
                 invokeJdkAttacher(pid, agentArgs, agentJarPath);
+            } else if (forceJattach) {
+                JattachAttacher.attach(pid, agentJarPath, agentArgs);
+            } else if (forceFallback) {
+                System.out.println("[IAST AttachTool] forced byte-buddy-agent fallback");
+                ByteBuddyAgentAttacher.attach(pid, agentJarPath, agentArgs);
+            } else if (isJdkAttachAvailable()) {
+                invokeJdkAttacher(pid, agentArgs, agentJarPath);
+            } else if (JattachAttacher.isAvailable()) {
+                System.out.println("[IAST AttachTool] jdk.attach unavailable, using jattach native binary");
+                JattachAttacher.attach(pid, agentJarPath, agentArgs);
             } else {
-                System.out.println("[IAST AttachTool] jdk.attach unavailable or overridden, using byte-buddy-agent fallback (Linux/macOS/Windows)");
+                System.out.println("[IAST AttachTool] jdk.attach/jattach unavailable, using byte-buddy-agent fallback");
                 ByteBuddyAgentAttacher.attach(pid, agentJarPath, agentArgs);
             }
         } catch (NumberFormatException e) {
@@ -93,8 +105,8 @@ public class AttachTool {
         System.out.println("  java -jar iast-agent.jar 12345 start");
         System.out.println();
         System.out.println("JRE support (Linux/macOS/Windows):");
-        System.out.println("  JDK 缺失时自动走 byte-buddy-agent 兜底：Linux/macOS 用 UNIX Socket，Windows 用 JNA DLL 注入");
-        System.out.println("  手动切换：-DiastAttach=jdk | -DiastAttach=fallback | -DiastAttach=auto（默认）");
+        System.out.println("  自动模式优先级：jdk.attach → jattach（若 PATH 里存在）→ byte-buddy-agent 兜底");
+        System.out.println("  手动切换：-DiastAttach=jdk | jattach | fallback | auto（默认）");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  <target-pid>    PID of the target JVM process");

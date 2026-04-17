@@ -269,6 +269,50 @@ echo "$LINE3" | grep -q '"params":{"file_path":"/tmp"}' \
     || { echo "❌ socket 模式 params 解析错误"; cleanup; exit 1; }
 echo "✅ byte-buddy-agent 挂载路径验证通过（JRE / Linux / macOS / Windows 通用）"
 
+if command -v jattach > /dev/null 2>&1; then
+    echo "========================================"
+    echo "7. 测试 jattach 外部二进制挂载（-DiastAttach=jattach）..."
+    echo "========================================"
+    cleanup
+    cd "$SCRIPT_DIR"
+    setsid java -jar "$DEMO_JAR" > $DEMO_LOG 2>&1 < /dev/null &
+    sleep 3
+    DEMO_PID3=$(pgrep -n -f "$DEMO_JAR")
+    if [ -z "$DEMO_PID3" ]; then
+        echo "❌ jattach 步骤：无法定位新 java 进程"
+        cleanup
+        exit 1
+    fi
+    echo $DEMO_PID3 > $PID_FILE
+    echo "✅ 新 Demo PID: $DEMO_PID3"
+    for i in {1..30}; do
+        if curl -s http://127.0.0.1:8080/api/hello > /dev/null 2>&1; then
+            echo "✅ Spring Boot 就绪"
+            break
+        fi
+        sleep 1
+    done
+    cd $SCRIPT_DIR/../agent && java -DiastAttach=jattach -jar target/iast-agent.jar $DEMO_PID3 config=../demo-spring/iast-monitor.yaml
+    sleep 3
+    cd $SCRIPT_DIR
+
+    curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
+    sleep 1
+    EVENT_LOG3="/tmp/iast-events-$DEMO_PID3.jsonl"
+    LINE4=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG3" 2>/dev/null | tail -1)
+    if [ -z "$LINE4" ]; then
+        echo "❌ jattach 模式挂载后未产生事件"
+        cleanup
+        exit 1
+    fi
+    echo "   事件行: $LINE4"
+    echo "$LINE4" | grep -q '"params":{"file_path":"/tmp"}' \
+        || { echo "❌ jattach 模式 params 解析错误"; cleanup; exit 1; }
+    echo "✅ jattach 挂载路径验证通过"
+else
+    echo "⚠️  未检测到 jattach，跳过步骤 7（安装后可自动启用）"
+fi
+
 echo "========================================"
 echo "✅ 所有测试通过！"
 echo "========================================"
