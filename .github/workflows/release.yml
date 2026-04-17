@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（例如 1.0.0）'
+        required: true
+        default: '1.0.0'
+      prerelease:
+        description: '标记为 prerelease'
+        type: boolean
+        default: false
+      notes:
+        description: '发布说明（可选，留空则由 git 历史自动生成）'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # 需要完整历史以便 --generate-notes 能看到之前的 tag
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build distribution
+        env:
+          IAST_VERSION: ${{ inputs.version }}
+        run: bash agent/dist.sh
+
+      - name: Verify artifact
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          TARBALL="agent/dist/iast-agent-${VERSION}.tar.gz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "❌ tarball not found: $TARBALL"
+            exit 1
+          fi
+          echo "✅ $(ls -la "$TARBALL")"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          TARBALL="agent/dist/iast-agent-${VERSION}.tar.gz"
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "❌ release $TAG 已存在，请先删除或换版本号"
+            exit 1
+          fi
+
+          CMD=(gh release create "$TAG" "$TARBALL" --title "IAST Agent $TAG")
+          if [ "$PRERELEASE" = "true" ]; then
+            CMD+=(--prerelease)
+          fi
+          if [ -n "$NOTES" ]; then
+            CMD+=(--notes "$NOTES")
+          else
+            CMD+=(--generate-notes)
+          fi
+          "${CMD[@]}"
+          echo "✅ Release $TAG 已创建，附件：$TARBALL"
