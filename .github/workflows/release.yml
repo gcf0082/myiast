@@ -63,8 +63,8 @@ jobs:
           TARBALL="agent/dist/iast-agent-${VERSION}.tar.gz"
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "❌ release $TAG 已存在，请先删除或换版本号"
-            exit 1
+            echo "⚠️  release $TAG 已存在，自动删除旧版本并重建..."
+            gh release delete "$TAG" --yes --cleanup-tag
           fi
 
           CMD=(gh release create "$TAG" "$TARBALL" --title "IAST Agent $TAG")
