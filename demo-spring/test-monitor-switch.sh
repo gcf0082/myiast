@@ -226,6 +226,18 @@ echo "$LINE2" | grep -q '"phase":"exit"' \
     || { echo "❌ on:[exit] 阶段过滤错误"; cleanup; exit 1; }
 echo "✅ CustomEventPlugin target/params[N]/return 全部验证通过"
 
+echo "📝 验证反射调用也能被拦截（/api/reflect-exists → Method.invoke(Files.exists)）..."
+REFLECT_BEFORE=$(grep "Method Call Intercepted: java.nio.file.Files.exists" $IAST_LOG | wc -l)
+curl -s "http://127.0.0.1:8080/api/reflect-exists?path=/tmp" > /dev/null
+sleep 1
+REFLECT_AFTER=$(grep "Method Call Intercepted: java.nio.file.Files.exists" $IAST_LOG | wc -l)
+if [ $REFLECT_AFTER -le $REFLECT_BEFORE ]; then
+    echo "❌ 反射调用未被拦截：before=$REFLECT_BEFORE after=$REFLECT_AFTER"
+    cleanup
+    exit 1
+fi
+echo "✅ 反射调用拦截生效（Files.exists 拦截数 $REFLECT_BEFORE → $REFLECT_AFTER）"
+
 echo "========================================"
 echo "6. 测试 JRE 兼容路径（-DiastAttach=fallback 强制走 byte-buddy-agent 跨平台实现）..."
 echo "========================================"

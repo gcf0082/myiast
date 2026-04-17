@@ -77,11 +77,12 @@ java -jar iast-agent.jar <目标进程PID> config=/path/to/custom-config.propert
 │   └── src/main/java/com/iast/agent/
 │       ├── IastAgent.java          # Agent入口，字节码增强实现
 │       └── MonitorConfig.java      # 配置文件加载解析
-├── demo/                   # 示例测试程序
-│   ├── com/weihua/MyTest.java      # 测试代码
-│   ├── build.sh                    # 构建脚本
-│   ├── run.sh                      # 运行脚本
-│   └── iast-monitor.properties     # 监控配置文件
+├── demo-spring/            # Spring Boot 示例与完整测试脚本
+│   ├── src/main/java/com/iast/demo/FileCheckController.java   # /api/* 端点（含反射调用用例）
+│   ├── iast-monitor.yaml          # 监控配置
+│   ├── run-premain.sh             # -javaagent 启动示例
+│   └── test-monitor-switch.sh     # 7 步回归测试
+├── dist.sh                 # 发布打包脚本
 └── README.md               # 项目说明文档
 ```
 

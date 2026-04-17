@@ -1,6 +1,6 @@
 # ============================================
 # demo-spring 专属 IAST 监控配置
-# 与 demo/iast-monitor.yaml 独立，专为 demo-spring/test-monitor-switch.sh 设计
+# 用于 test-monitor-switch.sh（attach 模式）和 run-premain.sh（premain 模式）
 # ============================================
 
 output:
@@ -17,6 +17,12 @@ monitor:
         - "<init>#*"
         - "exists#()Z"
         - "getAbsolutePath#()Ljava/lang/String;"
+      plugin: LogPlugin
+
+    # 反射调用也能拦截：/api/reflect-exists 通过 Method.invoke 调用 Files.exists
+    - className: java.nio.file.Files
+      methods:
+        - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
       plugin: LogPlugin
 
     # Step 4 使用：Servlet 请求 ID 跟踪
