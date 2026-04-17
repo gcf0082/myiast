@@ -4,15 +4,17 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 /**
- * Attach 模式挂载工具——支持 JDK 和 JRE 两种运行环境。
+ * Attach 模式挂载工具——跨环境通用（JDK / JRE，Linux / macOS / Windows）。
  *
  * 自动探测当前 JVM 是否含 jdk.attach 模块：
  *   - 有：走 JdkAttacher（com.sun.tools.attach.VirtualMachine）
- *   - 无：走 HotSpotSocketAttacher（/tmp/.java_pid&lt;pid&gt; UNIX Socket 协议）
+ *   - 无：走 ByteBuddyAgentAttacher（byte-buddy-agent 封装的跨平台实现，
+ *           Linux/macOS 走 UNIX Socket，Windows 走 JNA DLL 注入）
  *
  * 强制模式（调试用）：
- *   -DiastAttach=jdk      强制走 jdk.attach
- *   -DiastAttach=socket   强制走 socket 协议（在 JDK 上也能用，用于验证 JRE 路径）
+ *   -DiastAttach=jdk        强制走 jdk.attach
+ *   -DiastAttach=fallback   强制走 byte-buddy-agent（JDK 上也能用，便于验证 JRE 路径）
+ *   -DiastAttach=socket     历史别名，等同 fallback
  */
 public class AttachTool {
 
@@ -26,16 +28,16 @@ public class AttachTool {
         String agentJarPath = resolveAgentJarPath();
 
         String mode = System.getProperty("iastAttach", "auto");
-        boolean forceSocket = "socket".equalsIgnoreCase(mode);
+        boolean forceFallback = "fallback".equalsIgnoreCase(mode) || "socket".equalsIgnoreCase(mode);
         boolean forceJdk = "jdk".equalsIgnoreCase(mode);
-        boolean useJdk = forceJdk || (!forceSocket && isJdkAttachAvailable());
+        boolean useJdk = forceJdk || (!forceFallback && isJdkAttachAvailable());
 
         try {
             if (useJdk) {
                 invokeJdkAttacher(pid, agentArgs, agentJarPath);
             } else {
-                System.out.println("[IAST AttachTool] jdk.attach unavailable or overridden, using HotSpot socket protocol (JRE-compatible)");
-                HotSpotSocketAttacher.attach(pid, agentJarPath, agentArgs);
+                System.out.println("[IAST AttachTool] jdk.attach unavailable or overridden, using byte-buddy-agent fallback (Linux/macOS/Windows)");
+                ByteBuddyAgentAttacher.attach(pid, agentJarPath, agentArgs);
             }
         } catch (NumberFormatException e) {
             System.err.println("[IAST AttachTool] Error: Invalid PID format");
@@ -90,9 +92,9 @@ public class AttachTool {
         System.out.println("  java -jar iast-agent.jar 12345 stop");
         System.out.println("  java -jar iast-agent.jar 12345 start");
         System.out.println();
-        System.out.println("JRE support:");
-        System.out.println("  JDK 缺失时自动走 HotSpot UNIX Socket 协议，无需 jdk.attach 模块");
-        System.out.println("  手动切换：-DiastAttach=jdk | -DiastAttach=socket | -DiastAttach=auto（默认）");
+        System.out.println("JRE support (Linux/macOS/Windows):");
+        System.out.println("  JDK 缺失时自动走 byte-buddy-agent 兜底：Linux/macOS 用 UNIX Socket，Windows 用 JNA DLL 注入");
+        System.out.println("  手动切换：-DiastAttach=jdk | -DiastAttach=fallback | -DiastAttach=auto（默认）");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  <target-pid>    PID of the target JVM process");

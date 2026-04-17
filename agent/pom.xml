@@ -25,6 +25,18 @@
             <artifactId>byte-buddy</artifactId>
             <version>${bytebuddy.version}</version>
         </dependency>
+        <!-- Byte Buddy Agent：跨平台 attach 兜底（Linux/macOS UNIX Socket + Windows JNA DLL 注入） -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy-agent</artifactId>
+            <version>${bytebuddy.version}</version>
+        </dependency>
+        <!-- JNA：byte-buddy-agent 在 Windows 平台 attach 时用来调 Win32 API（OpenProcess/CreateRemoteThread） -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.14.0</version>
+        </dependency>
         <dependency>
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm</artifactId>

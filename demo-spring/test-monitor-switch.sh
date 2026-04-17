@@ -227,7 +227,7 @@ echo "$LINE2" | grep -q '"phase":"exit"' \
 echo "✅ CustomEventPlugin target/params[N]/return 全部验证通过"
 
 echo "========================================"
-echo "6. 测试 JRE 兼容路径（-DiastAttach=socket 强制走 HotSpot UNIX Socket）..."
+echo "6. 测试 JRE 兼容路径（-DiastAttach=fallback 强制走 byte-buddy-agent 跨平台实现）..."
 echo "========================================"
 cleanup
 # 把jar拷到/tmp，避免相对路径/cwd继承问题
@@ -251,7 +251,7 @@ for i in {1..30}; do
     fi
     sleep 1
 done
-cd $SCRIPT_DIR/../agent && java -DiastAttach=socket -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
+cd $SCRIPT_DIR/../agent && java -DiastAttach=fallback -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
 sleep 3
 cd $SCRIPT_DIR
 
@@ -267,7 +267,7 @@ fi
 echo "   事件行: $LINE3"
 echo "$LINE3" | grep -q '"params":{"file_path":"/tmp"}' \
     || { echo "❌ socket 模式 params 解析错误"; cleanup; exit 1; }
-echo "✅ HotSpot UNIX Socket 挂载路径验证通过（JRE 兼容）"
+echo "✅ byte-buddy-agent 挂载路径验证通过（JRE / Linux / macOS / Windows 通用）"
 
 echo "========================================"
 echo "✅ 所有测试通过！"
