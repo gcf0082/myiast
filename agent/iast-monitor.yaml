@@ -86,3 +86,23 @@ monitor:
       methods:
         - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
       plugin: LogPlugin
+
+    # ---------- 示例 5：ServletBodyPlugin（打印请求 body） ----------
+    # wrapServletRequest=true 触发专用 ServletBodyAdvice，改写 service 的入参 0：把原 HttpServletRequest
+    # 换成我们的 BufferingHttpServletRequestWrapper。业务后续 getInputStream()/getReader() 都是基于堆内
+    # byte[] 的 fresh 流，不消费、不破坏，随意重读；Agent 拿 cachedBody 打日志。
+    # v1 仅支持 jakarta.servlet.*（Spring Boot 3 / Tomcat 10+）。
+    # - className: jakarta.servlet.http.HttpServlet
+    #   methods:
+    #     - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+    #   plugin: ServletBodyPlugin
+    #   wrapServletRequest: true
+    #   pluginConfig:
+    #     maxLogBytes: 8192            # 日志里 body 最多打多少字节
+    #     hardLimitBytes: 10485760     # wrapper 读进堆的硬上限（10MB）；超过会截断，业务也拿不到完整 body
+    #     textContentTypes:            # 只对这些前缀的 Content-Type 做包装解码；填 ["*"] 放行所有
+    #       - application/json
+    #       - application/xml
+    #       - application/x-www-form-urlencoded
+    #       - text/
+    #     charset: UTF-8               # Content-Type 没带 charset 时的兜底

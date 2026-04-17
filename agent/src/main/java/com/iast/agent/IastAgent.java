@@ -230,17 +230,22 @@ public class IastAgent {
 
             final boolean linkConcrete = isInterfaceRule;
             final String interfaceInternalName = internalClassName;
+            final boolean wrapServletRequest = MonitorConfig.isWrapServletRequest(internalClassName);
 
             // 应用普通方法Advice
             if (methodMatcher != null) {
                 final ElementMatcher.Junction<MethodDescription> fm = methodMatcher;
+                final Class<?> adviceClass = wrapServletRequest ? ServletBodyAdvice.class : MethodMonitorAdvice.class;
+                if (wrapServletRequest) {
+                    LogWriter.getInstance().info("[IAST Agent] Using ServletBodyAdvice (wrapServletRequest=true) for " + className);
+                }
                 agentBuilder = agentBuilder
                         .type(typeMatcher)
                         .transform((builder, typeDescription, classLoader, module, protectionDomain) -> {
                             if (linkConcrete) {
                                 MonitorConfig.linkConcreteToPlugins(typeDescription.getInternalName(), interfaceInternalName);
                             }
-                            return builder.visit(Advice.to(MethodMonitorAdvice.class, adviceLocator).on(fm));
+                            return builder.visit(Advice.to(adviceClass, adviceLocator).on(fm));
                         });
             }
 
@@ -273,6 +278,7 @@ public class IastAgent {
         registerPlugin(pm, "LogPlugin", new com.iast.agent.plugin.LogPlugin(), allCfgs);
         registerPlugin(pm, "RequestIdPlugin", new com.iast.agent.plugin.RequestIdPlugin(), allCfgs);
         registerPlugin(pm, "CustomEventPlugin", new com.iast.agent.plugin.CustomEventPlugin(), allCfgs);
+        registerPlugin(pm, "ServletBodyPlugin", new com.iast.agent.plugin.ServletBodyPlugin(), allCfgs);
     }
 
     private static void registerPlugin(com.iast.agent.plugin.PluginManager pm, String name,

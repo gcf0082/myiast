@@ -246,6 +246,118 @@ run_delay_case() {
 
 run_delay_case
 
+write_body_config() {
+    local hard_limit="${1:-10485760}"
+    local path="$TMP_DIR/config-body-h${hard_limit}.yaml"
+    cat > "$path" <<EOF
+output:
+  args: true
+  return: true
+  stacktrace: false
+
+monitor:
+  default:
+    includeFutureClasses: true
+    premainDelayMs: 0
+  rules:
+    - className: jakarta.servlet.http.HttpServlet
+      methods:
+        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+      plugin: ServletBodyPlugin
+      wrapServletRequest: true
+      pluginConfig:
+        maxLogBytes: 8192
+        hardLimitBytes: ${hard_limit}
+        charset: UTF-8
+EOF
+    echo "$path"
+}
+
+run_body_case() {
+    local config="$(write_body_config 10485760)"
+    local stdout_log="$TMP_DIR/demo-body.stdout"
+
+    echo
+    echo "======================================================================"
+    echo "  CASE: D. ServletBodyPlugin 端到端（wrapServletRequest）"
+    echo "======================================================================"
+    echo "  config: $config"
+
+    java -javaagent:"$AGENT_JAR=config=$config" -jar "$APP_JAR" \
+        > "$stdout_log" 2>&1 &
+    DEMO_PID=$!
+    echo "  demo pid: $DEMO_PID"
+
+    local ready=0
+    for i in $(seq 1 90); do
+        if grep -q "Tomcat started on port" "$stdout_log" 2>/dev/null; then ready=1; break; fi
+        if ! kill -0 "$DEMO_PID" 2>/dev/null; then
+            echo "❌ demo 进程提前退出"; tail -30 "$stdout_log"; return 1
+        fi
+        sleep 0.5
+    done
+    [ "$ready" -eq 1 ] || { echo "❌ Tomcat 未就绪"; tail -30 "$stdout_log"; return 1; }
+    echo "  ✓ Tomcat 就绪"
+
+    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+
+    # D.1：正常 JSON POST —— 业务响应必须 echo 回原样，日志含 body
+    echo "  ---------- D.1 正常 JSON POST ----------"
+    local payload='{"hello":"world","n":42}'
+    local resp
+    resp=$(curl -sS -XPOST -H 'Content-Type: application/json' -d "$payload" http://127.0.0.1:8080/api/echo-body)
+    echo "    response: $resp"
+    if [ "$resp" != "$payload" ]; then
+        echo "❌ D.1 业务 echo 失败（wrapper 可能破坏了 body 读取）"; return 1
+    fi
+    sleep 1
+    local hit
+    hit=$(grep -E "\[ServletBody\].*body=\{\"hello\":\"world\",\"n\":42\}" "$iast_log" | head -1)
+    if [ -z "$hit" ]; then
+        echo "❌ D.1 日志里没看到 ServletBody 明细"; grep ServletBody "$iast_log" | tail -5; return 1
+    fi
+    echo "    ✓ 业务 echo 成功 + ServletBody 日志有 body"
+
+    # D.2：二进制 POST —— 日志应是 <not read by app...> 或 "Content-Type 不在白名单"，不能打乱码
+    echo "  ---------- D.2 二进制 POST (image/png) ----------"
+    head -c 10240 /dev/urandom > "$TMP_DIR/fake.png"
+    curl -sS -XPOST -H 'Content-Type: image/png' --data-binary @"$TMP_DIR/fake.png" \
+         http://127.0.0.1:8080/api/echo-body -o /dev/null -w "" || true
+    sleep 1
+    local bin_line
+    bin_line=$(grep -E "\[ServletBody\].*Content-Type=image/png" "$iast_log" | head -1)
+    if [ -z "$bin_line" ]; then
+        echo "❌ D.2 没看到 image/png 的 ServletBody 摘要"; tail -10 "$iast_log"; return 1
+    fi
+    if echo "$bin_line" | grep -q "body="; then
+        echo "❌ D.2 二进制不应解码成 body=...（会是乱码）：$bin_line"; return 1
+    fi
+    echo "    ✓ image/png 只记摘要、不解码"
+
+    # D.3：日志截断 —— body 比 maxLogBytes 大，业务应读到全量，日志有 log-truncated 标记
+    echo "  ---------- D.3 JSON body 超过 maxLogBytes (8192) ----------"
+    # 生成 ~20000 字节的 JSON（urandom→base64 保证纯 ASCII 且 JSON-safe）
+    local fill
+    fill=$(head -c 16000 /dev/urandom | base64 | tr -d '\n/=+' | head -c 20000)
+    local big_payload='{"k":"'"$fill"'"}'
+    local big_len=${#big_payload}
+    resp=$(curl -sS -XPOST -H 'Content-Type: application/json' -d "$big_payload" http://127.0.0.1:8080/api/echo-body)
+    local resp_len=${#resp}
+    if [ "$resp_len" -lt "$big_len" ]; then
+        echo "❌ D.3 业务回 echo 被截断：payload=${big_len}B response=${resp_len}B"; return 1
+    fi
+    sleep 1
+    if ! grep -E "\[ServletBody\].*log-truncated, total " "$iast_log" >/dev/null; then
+        echo "❌ D.3 日志没有 log-truncated 标记"; grep ServletBody "$iast_log" | tail -5; return 1
+    fi
+    echo "    ✓ 业务拿到全量 ${big_len}B，日志带 log-truncated 标记"
+
+    kill_demo
+    echo "✅ [CASE D] ServletBodyPlugin 行为符合预期"
+}
+
+run_body_case
+
 echo
 echo "======================================================================"
 echo "  全部用例通过 ✅"

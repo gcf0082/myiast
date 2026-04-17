@@ -12,6 +12,7 @@ public class MonitorRuleConfig {
     private String plugin;              // 插件名称
     private Map<String, Object> pluginConfig;  // 插件配置
     private String matchType = "exact"; // 匹配模式：exact（精确类名）| interface（接口，覆盖所有具体实现类）
+    private boolean wrapServletRequest = false; // 仅对 HttpServlet.service 规则有效：启用后用 ServletBodyAdvice 代替 MethodMonitorAdvice，改写入参 0 为缓冲 wrapper
 
     public String getClassName() {
         return className;
@@ -51,5 +52,13 @@ public class MonitorRuleConfig {
 
     public void setMatchType(String matchType) {
         this.matchType = matchType;
+    }
+
+    public boolean isWrapServletRequest() {
+        return wrapServletRequest;
+    }
+
+    public void setWrapServletRequest(boolean wrapServletRequest) {
+        this.wrapServletRequest = wrapServletRequest;
     }
 }

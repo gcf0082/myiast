@@ -78,6 +78,57 @@
                     </compilerArgs>
                 </configuration>
             </plugin>
+
+            <!-- 把 src/wrapper-java 作为额外源目录编译；之后 antrun 会把产物挪走避免进主 classpath -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>add-wrapper-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/src/wrapper-java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                wrapper 类不能被 bootstrap ClassLoader 当成普通 class 加载（会 NoClassDefFoundError：
+                bootstrap 看不到 jakarta.servlet.*）。所以编译完先搬出 target/classes，改名为 .class.bin 资源，
+                运行期通过 getResourceAsStream 取字节，再由 WrapperInjector 注入目标应用 ClassLoader。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>hide-wrapper-class</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <move file="${project.build.outputDirectory}/com/iast/agent/runtime/jakarta/BufferingHttpServletRequestWrapper.class"
+                                      tofile="${project.build.outputDirectory}/iast/runtime/jakarta-BufferingHttpServletRequestWrapper.class.bin"/>
+                                <move file="${project.build.outputDirectory}/com/iast/agent/runtime/jakarta/BufferingHttpServletRequestWrapper$CachedServletInputStream.class"
+                                      tofile="${project.build.outputDirectory}/iast/runtime/jakarta-BufferingHttpServletRequestWrapper$CachedServletInputStream.class.bin"/>
+                                <!-- 清空留下的空目录 -->
+                                <delete dir="${project.build.outputDirectory}/com/iast/agent/runtime" quiet="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

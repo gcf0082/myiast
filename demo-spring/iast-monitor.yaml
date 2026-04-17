@@ -54,6 +54,24 @@ monitor:
         - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
       plugin: LogPlugin
 
+    # ServletBodyPlugin：打印请求 body。
+    # wrapServletRequest=true 触发 ServletBodyAdvice，运行期把 arg[0] 换成缓冲 wrapper，
+    # 业务后续 getInputStream()/getReader() 都从缓冲流读，不影响正常反序列化。
+    - className: jakarta.servlet.http.HttpServlet
+      methods:
+        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+      plugin: ServletBodyPlugin
+      wrapServletRequest: true
+      pluginConfig:
+        maxLogBytes: 8192
+        hardLimitBytes: 10485760
+        textContentTypes:
+          - application/json
+          - application/xml
+          - application/x-www-form-urlencoded
+          - text/
+        charset: UTF-8
+
     # Step 5a 使用：CustomEventPlugin，演示 params[0] 取参
     # 同一个方法也挂上 LogPlugin，验证"一个函数多个插件处理"——两份日志都会出
     - className: java.nio.file.Files

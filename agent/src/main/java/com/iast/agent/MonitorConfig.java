@@ -27,6 +27,8 @@ public class MonitorConfig {
     private static final Map<String, List<Map<String, Object>>> pluginConfigs = new HashMap<>();
     // internal className -> matchType（"exact" 或 "interface"），默认缺省视为 "exact"
     private static final Map<String, String> classMatchType = new HashMap<>();
+    // internal className -> 是否启用 ServletBody 包装（仅对 HttpServlet.service 规则有意义）
+    private static final Map<String, Boolean> classWrapServletRequest = new HashMap<>();
     // 全局开关：matchType=interface 时，是否把安装后新加载的实现类也纳入监控
     private static volatile boolean includeFutureClasses = false;
     // premain 模式下字节码 install 的延迟毫秒数，默认 1 分钟
@@ -179,6 +181,11 @@ public class MonitorConfig {
                     } else if (!existingMatchType.equals(ruleMatchType)) {
                         LogWriter.getInstance().info("[IAST Agent] Warning: conflicting matchType for " + className
                                 + " (existing=" + existingMatchType + ", new=" + ruleMatchType + "), keeping existing");
+                    }
+
+                    // wrapServletRequest 只要有一条 rule 声明为 true，本 className 所有规则都走包装路径
+                    if (rule.isWrapServletRequest()) {
+                        classWrapServletRequest.put(internalClassName, Boolean.TRUE);
                     }
 
                     // 存储插件名称，默认使用LogPlugin；同一个类可以挂多个插件，按YAML声明顺序排列
@@ -340,6 +347,13 @@ public class MonitorConfig {
      */
     public static String getMatchType(String internalClassName) {
         return classMatchType.getOrDefault(internalClassName, "exact");
+    }
+
+    /**
+     * 是否对该规则启用 ServletBody 包装（改写 service 入参为缓冲 wrapper）
+     */
+    public static boolean isWrapServletRequest(String internalClassName) {
+        return classWrapServletRequest.getOrDefault(internalClassName, Boolean.FALSE);
     }
 
     /**

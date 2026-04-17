@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Map;
 import java.util.stream.Stream;
 
 @RestController
@@ -18,6 +19,15 @@ public class FileCheckController {
     @GetMapping("/hello")
     public String hello() {
         return "Hello from Spring Boot IAST Demo!";
+    }
+
+    /**
+     * 供 ServletBodyPlugin 端到端验证：Jackson 会调 getInputStream()/getReader() 读 body，
+     * 业务拿到 body 后原样回写。既验证"业务能读到全量 body"，又让日志里有 body 可打。
+     */
+    @PostMapping("/echo-body")
+    public Map<String, Object> echoBody(@RequestBody Map<String, Object> body) {
+        return body;
     }
 
     @PostMapping("/check-file")
