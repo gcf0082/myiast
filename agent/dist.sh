@@ -23,6 +23,8 @@ cp "${AGENT_DIR}/README.md"             "${OUT}/"
 cp "${AGENT_DIR}/iast-monitor.yaml"     "${OUT}/"
 cp "${AGENT_DIR}/iast-start.sh"         "${OUT}/"
 cp "${AGENT_DIR}/iast-stop.sh"          "${OUT}/"
+cp "${AGENT_DIR}/iast-start-jattach.sh" "${OUT}/"
+cp "${AGENT_DIR}/iast-stop-jattach.sh"  "${OUT}/"
 chmod +x "${OUT}"/*.sh
 
 echo "==> 打包 tarball"

@@ -7,11 +7,13 @@
 
 ```
 iast-agent-<version>/
-├── README.md           本文档
-├── iast-agent.jar      Agent 主 jar（已 shade，自包含所有依赖）
-├── iast-monitor.yaml   监控配置样例（可直接用）
-├── iast-start.sh       启动/恢复监控
-└── iast-stop.sh        停止监控
+├── README.md                本文档
+├── iast-agent.jar           Agent 主 jar（已 shade，自包含所有依赖）
+├── iast-monitor.yaml        监控配置样例（可直接用）
+├── iast-start.sh            启动/恢复监控（用 java 跑 AttachTool）
+├── iast-stop.sh             停止监控（用 java 跑 AttachTool）
+├── iast-start-jattach.sh    启动/恢复监控（直接调 jattach，不依赖 java）
+└── iast-stop-jattach.sh     停止监控（直接调 jattach）
 ```
 
 ## 两种部署模式
@@ -34,6 +36,20 @@ jps -l
 # 指定自定义配置
 ./iast-start.sh 12345 /path/to/custom.yaml
 ```
+
+**无 Java 环境的替代方案（iast-*-jattach.sh）**
+
+如果目标机器没有 JRE，只能下个 [jattach](https://github.com/jattach/jattach/releases) 二进制（~50KB，单文件，支持 Linux/macOS/Windows），
+用 `iast-start-jattach.sh` / `iast-stop-jattach.sh` 代替：
+
+```bash
+./iast-start-jattach.sh 12345         # 挂载 + 默认配置
+./iast-stop-jattach.sh 12345
+./iast-start-jattach.sh 12345 custom.yaml
+```
+
+两者行为完全等价，只是底层挂载不走 `java -jar iast-agent.jar`，而是直接：
+`jattach <pid> load instrument false "<agent-jar>=<args>"`。
 
 **输出文件**
 - 人读日志：`/tmp/iast-agent-<pid>.log`（拦截调用、参数、栈、插件启动信息）
