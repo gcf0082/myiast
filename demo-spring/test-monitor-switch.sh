@@ -239,7 +239,7 @@ fi
 echo "✅ 反射调用拦截生效（Files.exists 拦截数 $REFLECT_BEFORE → $REFLECT_AFTER）"
 
 echo "========================================"
-echo "6. 测试 JRE 兼容路径（-DiastAttach=fallback 强制走 byte-buddy-agent 跨平台实现）..."
+echo "6. 测试 JRE 无 jattach 场景：byte-buddy-agent 兜底..."
 echo "========================================"
 cleanup
 # 把jar拷到/tmp，避免相对路径/cwd继承问题
@@ -263,7 +263,22 @@ for i in {1..30}; do
     fi
     sleep 1
 done
-cd $SCRIPT_DIR/../agent && java -DiastAttach=fallback -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
+
+# 从 PATH 剥掉 jattach 所在目录，模拟系统未安装 jattach
+NO_JATTACH_PATH="$PATH"
+if command -v jattach > /dev/null 2>&1; then
+    JATTACH_DIR=$(dirname "$(command -v jattach)")
+    NO_JATTACH_PATH=$(echo "$PATH" | tr ':' '\n' | grep -vxF "$JATTACH_DIR" | paste -sd ':')
+    echo "📝 从 PATH 剥离 $JATTACH_DIR 模拟无 jattach 环境"
+    if PATH="$NO_JATTACH_PATH" command -v jattach > /dev/null 2>&1; then
+        echo "❌ PATH 剥离失败，jattach 仍可见"
+        cleanup
+        exit 1
+    fi
+fi
+
+# -DiastAttach=fallback 强制走 byte-buddy-agent；PATH 里也没有 jattach，双重保险
+cd $SCRIPT_DIR/../agent && PATH="$NO_JATTACH_PATH" java -DiastAttach=fallback -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
 sleep 3
 cd $SCRIPT_DIR
 
@@ -272,14 +287,14 @@ sleep 1
 EVENT_LOG2="/tmp/iast-events-$DEMO_PID2.jsonl"
 LINE3=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG2" 2>/dev/null | tail -1)
 if [ -z "$LINE3" ]; then
-    echo "❌ socket 模式挂载后未产生事件"
+    echo "❌ byte-buddy-agent 挂载后未产生事件"
     cleanup
     exit 1
 fi
 echo "   事件行: $LINE3"
 echo "$LINE3" | grep -q '"params":{"file_path":"/tmp"}' \
-    || { echo "❌ socket 模式 params 解析错误"; cleanup; exit 1; }
-echo "✅ byte-buddy-agent 挂载路径验证通过（JRE / Linux / macOS / Windows 通用）"
+    || { echo "❌ byte-buddy-agent 模式 params 解析错误"; cleanup; exit 1; }
+echo "✅ byte-buddy-agent 挂载路径验证通过（JRE / Linux / macOS / Windows 通用，无 jattach）"
 
 if command -v jattach > /dev/null 2>&1; then
     echo "========================================"
