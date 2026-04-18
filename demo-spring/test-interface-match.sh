@@ -260,6 +260,15 @@ monitor:
     includeFutureClasses: true
     premainDelayMs: 0
   rules:
+    # RequestIdPlugin 挂在 Servlet 接口规则上——和下面 HttpServlet exact+wrap 的规则
+    # 不共享 className，advice 栈各自独立，两者都能触发。
+    - className: jakarta.servlet.Servlet
+      matchType: interface
+      methods:
+        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+      plugin: RequestIdPlugin
+
+    # ServletBodyPlugin：缓冲 body + 打日志
     - className: jakarta.servlet.http.HttpServlet
       methods:
         - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
@@ -300,6 +309,27 @@ run_body_case() {
     echo "  ✓ Tomcat 就绪"
 
     local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+
+    # D.0：上游带 X-Request-Id 头时 RequestIdPlugin 应直接复用，不生成新 UUID
+    echo "  ---------- D.0 上游 X-Request-Id 直通 ----------"
+    local incoming_id="upstream-id-abc123"
+    curl -sS -XPOST -H 'Content-Type: application/json' \
+        -H "X-Request-Id: $incoming_id" \
+        -d '{"probe":"id"}' http://127.0.0.1:8080/api/echo-body -o /dev/null -w ""
+    sleep 1
+    if ! grep -F "[requestId=${incoming_id}]" "$iast_log" >/dev/null; then
+        echo "❌ D.0 日志里没透传上游 id=$incoming_id"
+        grep -E "IAST RequestId|ServletBody" "$iast_log" | tail -10
+        return 1
+    fi
+    local request_started_hits
+    request_started_hits=$(grep -F "[requestId=${incoming_id}]" "$iast_log" \
+                           | grep -c "Request Started" || true)
+    if [ "$request_started_hits" -lt 1 ]; then
+        echo "❌ D.0 RequestIdPlugin 没以上游 id 记录 Request Started"
+        return 1
+    fi
+    echo "    ✓ 复用上游 X-Request-Id: $incoming_id"
 
     # D.1：正常 JSON POST —— 业务响应必须 echo 回原样，日志含 body
     echo "  ---------- D.1 正常 JSON POST ----------"

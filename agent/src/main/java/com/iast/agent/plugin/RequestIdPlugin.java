@@ -10,8 +10,10 @@ import java.util.UUID;
  * 拦截Servlet请求，生成UUID作为requestId，记录日志并设置响应头
  */
 public class RequestIdPlugin implements IastPlugin {
+    private static final String INCOMING_HEADER = "X-Request-Id";
+
     private LogWriter logWriter;
-    
+
     @Override
     public void init(Map<String, Object> config) {
         logWriter = LogWriter.getInstance();
@@ -33,7 +35,11 @@ public class RequestIdPlugin implements IastPlugin {
         int depth = RequestIdHolder.enter();
         String requestId = RequestIdHolder.get();
         if (requestId == null) {
-            requestId = UUID.randomUUID().toString().replace("-", "");
+            // 优先采用调用方已经带进来的 X-Request-Id 头；这样跨服务链路的 id 能直接串起来，
+            // 前端可以用自己种的 id 追溯。上游没传再 fallback 到本地 UUID。
+            Object req = (context.getArgs() != null && context.getArgs().length > 0) ? context.getArgs()[0] : null;
+            String incoming = extractIncomingId(req);
+            requestId = (incoming != null) ? incoming : UUID.randomUUID().toString().replace("-", "");
             RequestIdHolder.set(requestId);
         }
 
@@ -86,9 +92,25 @@ public class RequestIdPlugin implements IastPlugin {
     @Override
     public void destroy() {
     }
-    
+
     @Override
     public String getName() {
         return "RequestIdPlugin";
+    }
+
+    /**
+     * 反射读 request.getHeader("X-Request-Id")（ServletRequest 接口在 Agent 所在 bootstrap CL
+     * 不可见，不能编译时依赖）。拿到什么用什么，不对值做任何改动——上游传啥就用啥。
+     * 返回 null 代表上游没传这个头，由调用方 fallback 到 UUID。
+     */
+    private static String extractIncomingId(Object req) {
+        if (req == null) return null;
+        try {
+            Method getHeader = req.getClass().getMethod("getHeader", String.class);
+            Object v = getHeader.invoke(req, INCOMING_HEADER);
+            return (v instanceof String) ? (String) v : null;
+        } catch (Throwable ignore) {
+            return null;
+        }
     }
 }
