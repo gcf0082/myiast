@@ -1,7 +1,7 @@
 package com.iast.agent;
 
 import com.iast.agent.inject.WrapperInjector;
-import com.iast.agent.plugin.RequestIdHolder;
+import com.iast.agent.plugin.IastContext;
 import com.iast.agent.plugin.ServletBodyPlugin;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
@@ -38,7 +38,7 @@ public class ServletBodyAdvice {
 
         if (!ServletBodyPlugin.shouldWrap(contentType, declaredLen)) {
             // 不包装但仍然可记一笔"非文本 / 超大"的 summary
-            ServletBodyPlugin.emit(RequestIdHolder.get(), contentType, null, null,
+            ServletBodyPlugin.emit(IastContext.getRequestId(), contentType, null, null,
                     declaredLen < 0 ? 0 : declaredLen, false);
             return null;
         }
@@ -64,7 +64,7 @@ public class ServletBodyAdvice {
             String ct = (ctObj instanceof String) ? (String) ctObj : null;
             String enc = (encObj instanceof String) ? (String) encObj : null;
 
-            ServletBodyPlugin.emit(RequestIdHolder.get(), ct, enc, body, total, tr);
+            ServletBodyPlugin.emit(IastContext.getRequestId(), ct, enc, body, total, tr);
         } catch (Throwable ignore) {}
     }
 }
