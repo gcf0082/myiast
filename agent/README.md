@@ -16,6 +16,9 @@ iast-agent-<version>/
 └── iast-stop-jattach.sh     停止监控（直接调 jattach）
 ```
 
+> 交互式 CLI 客户端（`iast-cli-jattach.sh` + `iast-cli.jar`）已拆到独立项目
+> [`iast-cli/`](../iast-cli/)。release tarball 打包时会把两边的 jar 和 script 都放进来。
+
 ## 两种部署模式
 
 ### 模式一：Attach（对运行中的 JVM 动态挂载，推荐用于开发/测试）
@@ -221,6 +224,72 @@ monitor:
 [IAST Agent] Building AgentBuilder and installing transformers...   # 到期后才出现
 ```
 
+## 交互式 CLI（arthas 风格）
+
+挂载完成后，想查"当前加载了哪些规则 / 都有哪些插件 / JVM 里有没有某个类"，
+用 [`iast-cli/`](../iast-cli/) 里的 `iast-cli-jattach.sh` 开一个 REPL：
+
+```bash
+../iast-cli/iast-cli-jattach.sh 12345
+→ 首次进入 CLI 或端口失效，jattach 让目标进程起 CLI server...
+→ 已连接 127.0.0.1:35971（Ctrl-D 或输入 quit 退出）
+iast-cli connected. Type 'help' for commands.
+iast> status
+pid:            12345
+monitorEnabled: true
+callCount:      12
+configPath:     ./iast-monitor.yaml
+uptimeSec:      17
+javaVersion:    21.0.9
+iast> quit
+```
+
+**工作原理**：第一次跑脚本时，通过 jattach 给 agent 发 `cli` 动词，agent 在目标 JVM
+里起一个 **WebSocket server**，bind 在 `127.0.0.1` + OS 分配端口，端口号写到
+`/tmp/iast-agent-<pid>.port`。客户端是独立的 `iast-cli.jar`（纯 JDK 8+，入口类
+`com.iast.cli.CliClient`），握手后进入 REPL。后续再跑脚本直接探活已有端口，
+不再走 jattach。
+
+服务端代码（`com.iast.agent.cli.{CliServer, CliHandler, WsFrame}`）依旧在
+`iast-agent.jar` 里——和 agent 内部状态耦合，不能拆出去。
+
+### 命令表
+
+| 命令 | 说明 |
+|------|------|
+| `help` | 列出所有命令 |
+| `status` | PID / MONITOR_ENABLED / globalCallCount / 配置文件路径 / 启动至今秒数 / Java 版本 |
+| `plugins` | 列出已注册插件：`name → 实现类 FQCN` |
+| `rules` | 表格列出所有被监控类：`ClassName / matchType / wrapBody / 方法数` |
+| `rules <class>` | 打印单个类的 matchType、关联插件、方法签名列表（`<class>` 可 FQ 也可 internal，两者等价） |
+| `classes <substring>` | 在 `Instrumentation.getAllLoadedClasses()` 里按**子串**（大小写不敏感）搜 |
+| `classes re:<regex>` | 正则搜（`Pattern.compile` + `matcher.find()`），要精确锚自己加 `^`/`$` |
+| `enable` / `disable` | 运行时翻 `MONITOR_ENABLED`；效果等价 `iast-start.sh` / `iast-stop.sh` 但不经过 jattach |
+| `quit` / `exit` | 关闭会话 |
+
+**classes 命令的输出约定**：命中 ≤500 打全 + `total: N`；>500 打前 500 + `... (N more truncated; total M)`；命中 0 → `no loaded class matches: <pattern>`。
+
+### 常用姿势
+
+```bash
+iast> classes DispatcherServlet          # 子串
+iast> classes re:^org\.springframework\..*Controller$   # 正则
+iast> rules jakarta.servlet.http.HttpServlet            # FQ
+iast> rules java/io/File                                # internal 也行
+```
+
+### 安全与边界
+
+- **Loopback only**：server 只 bind `127.0.0.1`，外网卡 / 容器网段连不上（物理网卡 `nc -zv host port` 必拒）
+- **按需启动**：没发 `cli` 动词之前不开端口，零开销
+- **单活跃会话**：同时只允许一个客户端；新连接到来旧会话会被踢掉，避免多客户端串扰开关
+- **端口持久化**：`.port` 文件一直在，重复跑 cli 脚本直接复用；端口失效时脚本会自动清理重新 jattach
+- **无鉴权**：依赖"同主机同用户"的本地安全边界——不要在多租户容器里暴露，也别把端口通过 iptables/portainer 转出去
+
+### v1 不做
+
+`reload`（YAML 热加载）、`trace/watch`（动态注入 advice 追踪某方法的入参/耗时/栈）、身份认证——工程量较大，放到后续 PR。
+
 ## JSONL 事件格式
 
 每行一个 JSON 对象：
@@ -244,6 +313,8 @@ tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.event_type == "file.list")'
 | premain 启动后长时间没拦截 | 正常：默认 `premainDelayMs=60000` 会让字节码 install 延迟 1 分钟。日志里找 `Bytecode install deferred by ...`；立即生效把它设 `0` |
 | `matchType: interface` 配了但没命中 | (1) premain 模式下应用还没起来就挂 Agent，把 `includeFutureClasses: true` 打开或调大 `premainDelayMs` 让快照更完整；(2) 方法是从抽象父类继承来、子类没 override —— 这时 hook 会发生在父类而非子类，属于正常 |
 | JRE 环境 attach 失败 | `-DiastAttach=fallback` 强走 byte-buddy-agent；或安装 jattach |
+| `iast-cli-jattach.sh` 提示 `CLI server 未在 3s 内就绪` | 看 `/tmp/iast-agent-<pid>.log` 尾行：(1) 端口被别的进程占（很少见）；(2) agent 还没到"已初始化"——先跑一次 `iast-start-jattach.sh` 挂上再开 cli |
+| CLI 连上但 `rules` / `status` 空 | agent 还没执行 `buildAndInstall`（比如 premain 延迟期），等一下再试；或 `disable` → `enable` 看回显确认连接正常 |
 | Windows JRE | 需要 byte-buddy-agent 路径（自动），或装 jattach Windows 版 |
 
 ## 日志清理

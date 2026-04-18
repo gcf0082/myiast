@@ -37,6 +37,11 @@ public class MonitorConfig {
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
 
+    /** CLI 命令要用（status 打印当前生效的配置文件路径）；init() 执行过后才有意义。 */
+    public static String getConfigFilePath() {
+        return configFilePath;
+    }
+
     // 输出控制选项
     private static boolean outputArgs = true;
     private static boolean outputReturn = true;

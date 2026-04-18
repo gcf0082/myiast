@@ -10,6 +10,7 @@ Java Agent 实现的交互式应用安全测试工具，支持监控任意JDK方
 - ✅ 支持 pre-agent 与 attach 两种挂载模式
 - ✅ **接口级监控**：`matchType: interface` 一行规则覆盖所有实现类（含后加载的，可开关）
 - ✅ **premain 启动友好**：默认延迟 1 分钟再 install 字节码，业务启动期零拦截开销
+- ✅ **交互式 CLI**：arthas 风格的 REPL，实时查规则 / 插件 / 已加载类（WebSocket，仅 loopback）
 - ✅ 完全兼容Java 8 ~ Java 21
 - ✅ 无需额外启动参数（无需`-Xbootclasspath/a`）
 
@@ -74,6 +75,28 @@ java -jar iast-agent.jar <目标进程PID> config=/path/to/custom-config.propert
 - JDK大版本需要与目标JVM保持一致
 - 配置文件需要是目标进程可访问的绝对路径
 
+### 4. 交互式 CLI（arthas 风格）
+
+挂载之后随时开一个 REPL 查规则 / 插件 / 已加载类。客户端在独立项目 `iast-cli/` 里：
+
+```bash
+cd iast-cli && mvn -q package -DskipTests       # 构建 iast-cli.jar（只需一次）
+./iast-cli-jattach.sh <目标PID>
+iast> help
+iast> status
+iast> rules
+iast> rules jakarta.servlet.http.HttpServlet
+iast> classes DispatcherServlet
+iast> classes re:^org\.springframework\..*Controller$
+iast> disable          # 运行时关监控（不用再 jattach）
+iast> enable
+iast> quit
+```
+
+首次打开时 jattach 会让目标 JVM 在 `127.0.0.1` 起一个 WebSocket server（端口写
+`/tmp/iast-agent-<pid>.port`），只 bind loopback、不暴露外网卡。完整命令表和协议细节看
+[`agent/README.md`](agent/README.md#交互式-cli-arthas-风格)。
+
 ## 方法描述符说明
 | Java方法声明 | 描述符 |
 |--------------|--------|
@@ -98,6 +121,12 @@ java -jar iast-agent.jar <目标进程PID> config=/path/to/custom-config.propert
 │   ├── run-premain.sh             # -javaagent 启动示例
 │   ├── test-monitor-switch.sh     # 7 步回归测试
 │   └── test-interface-match.sh    # 接口级监控 + premainDelayMs 端到端测试（3 个用例）
+├── iast-cli/                  # 交互式 CLI 独立 Maven 项目
+│   ├── pom.xml
+│   ├── iast-cli-jattach.sh    # 入口脚本（WebSocket 连目标 JVM）
+│   └── src/main/java/com/iast/cli/
+│       ├── CliClient.java     # REPL 客户端（raw-mode tty line editing）
+│       └── WsFrame.java       # RFC 6455 text/close frame 编解码（客户端视角）
 ├── dist.sh                 # 发布打包脚本
 └── README.md               # 项目说明文档
 ```

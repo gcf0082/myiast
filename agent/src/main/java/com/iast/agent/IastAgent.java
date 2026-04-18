@@ -23,7 +23,12 @@ public class IastAgent {
     public static volatile boolean MONITOR_ENABLED = true;
     // 初始化标记，避免重复执行初始化逻辑
     private static volatile boolean INITIALIZED = false;
-    
+
+    // Agent 启动的 wall-clock 毫秒，CLI status 用
+    public static final long START_TIME = System.currentTimeMillis();
+    // 保存 Instrumentation 以便 CLI 运行期调用 getAllLoadedClasses（buildAndInstall 之后就没其他地方用）
+    public static volatile Instrumentation INSTRUMENTATION;
+
     // 当前方法上下文（用于onExit时获取类名）
     // 必须public：Advice字节码会被内联到被监控的类中（如HttpServlet），
     // 这些类与IastAgent处于不同ClassLoader，访问private字段会触发IllegalAccessError
@@ -54,7 +59,7 @@ public class IastAgent {
      * @param isPremain true=premain（JVM 启动时），false=agentmain（attach 到运行中进程）
      */
     private static void startAgent(String agentArgs, Instrumentation inst, boolean isPremain) {
-        // 如果已经初始化，仅处理开关指令
+        // 如果已经初始化，仅处理开关/CLI 指令
         if (INITIALIZED) {
             LogWriter.getInstance().info("[IAST Agent] Already initialized, processing control command: " + agentArgs);
             if ("stop".equals(agentArgs)) {
@@ -63,11 +68,16 @@ public class IastAgent {
             } else if ("start".equals(agentArgs)) {
                 MONITOR_ENABLED = true;
                 LogWriter.getInstance().info("[IAST Agent] Monitor enabled successfully");
+            } else if ("cli".equals(agentArgs)) {
+                com.iast.agent.cli.CliServer.ensureStarted();
             }
             return;
         }
         // 首次初始化，正常执行流程
         LogWriter.getInstance().info("[IAST Agent] Java version: " + System.getProperty("java.version"));
+
+        // 保存全局 Instrumentation 引用供 CLI / 未来工具使用（install 完成后 inst 不会被持有）
+        INSTRUMENTATION = inst;
 
         // 定位Agent jar路径并添加到bootstrap classpath
         File agentJarFile = findAgentJar();
@@ -130,9 +140,14 @@ public class IastAgent {
             installTask.run();
         }
 
-        // 标记初始化完成：后续 agentmain("start"/"stop") 能进入开关处理分支。
+        // 标记初始化完成：后续 agentmain("start"/"stop"/"cli") 能进入开关/命令处理分支。
         // 这里先于实际 install 标记是安全的——advice 的 MONITOR_ENABLED 检查独立于 INITIALIZED。
         INITIALIZED = true;
+
+        // 首次 attach 时若直接带 "cli"，一并把 CLI server 起来（"一步到位"场景）
+        if ("cli".equals(agentArgs)) {
+            com.iast.agent.cli.CliServer.ensureStarted();
+        }
     }
 
     /**

@@ -1,6 +1,8 @@
 package com.iast.agent.plugin;
 
 import com.iast.agent.LogWriter;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -57,6 +59,16 @@ public class PluginManager {
         }
     }
     
+    /** CLI plugins 命令：列出已注册插件 name → 实现类 FQCN。返回只读快照。 */
+    public Map<String, String> listPluginClasses() {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<String, IastPlugin> e : plugins.entrySet()) {
+            IastPlugin p = e.getValue();
+            out.put(e.getKey(), p == null ? "null" : p.getClass().getName());
+        }
+        return Collections.unmodifiableMap(out);
+    }
+
     /**
      * 销毁所有插件
      */
