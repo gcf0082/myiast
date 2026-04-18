@@ -294,6 +294,26 @@ public class IastAgent {
         registerPlugin(pm, "RequestIdPlugin", new com.iast.agent.plugin.RequestIdPlugin(), allCfgs);
         registerPlugin(pm, "CustomEventPlugin", new com.iast.agent.plugin.CustomEventPlugin(), allCfgs);
         registerPlugin(pm, "ServletBodyPlugin", new com.iast.agent.plugin.ServletBodyPlugin(), allCfgs);
+
+        // 外部插件：按 monitor.default.pluginsDir 指向的目录，通过 ServiceLoader 发现
+        // 冲突策略：外部插件 getName() 如果和内置撞名，保守跳过——不允许外部覆盖内置实现
+        String dir = MonitorConfig.getPluginsDir();
+        java.util.List<com.iast.agent.plugin.IastPlugin> externals =
+                com.iast.agent.plugin.PluginDiscovery.discover(dir);
+        for (com.iast.agent.plugin.IastPlugin ext : externals) {
+            String name = ext.getName();
+            if (name == null || name.isEmpty()) {
+                LogWriter.getInstance().info("[IAST Agent] External plugin missing getName(), skipped: " + ext.getClass().getName());
+                continue;
+            }
+            if (pm.getPlugin(name) != null) {
+                LogWriter.getInstance().info("[IAST Agent] WARN external plugin name '" + name
+                        + "' conflicts with a built-in plugin; keeping built-in, skipping external "
+                        + ext.getClass().getName());
+                continue;
+            }
+            registerPlugin(pm, name, ext, allCfgs);
+        }
     }
 
     private static void registerPlugin(com.iast.agent.plugin.PluginManager pm, String name,

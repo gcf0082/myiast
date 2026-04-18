@@ -3,7 +3,17 @@
 cd "$(dirname "$0")"
 SCRIPT_DIR=$(pwd)
 
-AGENT_JAR="../agent/target/iast-agent.jar"
+# Layout 自适应：tarball（demo 子目录，agent jar 在 ../）vs 源码仓（agent 模块 target/）
+if [ -f "$SCRIPT_DIR/../iast-agent.jar" ]; then
+    LAYOUT=tarball
+    AGENT_JAR="$SCRIPT_DIR/../iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/demo-spring-1.0.0.jar"
+else
+    LAYOUT=repo
+    AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
+fi
+CONFIG_YAML="$SCRIPT_DIR/iast-monitor.yaml"
 PID_FILE="/tmp/spring-demo-test.pid"
 DEMO_LOG="/tmp/spring-demo-test.log"
 
@@ -14,7 +24,8 @@ cleanup() {
         kill $OLD_PID 2>/dev/null
         rm -f $PID_FILE
     fi
-    pkill -f "target/demo-spring-1.0.0.jar" 2>/dev/null
+    # 放宽为按 jar 文件名匹配，涵盖 repo（target/...）和 tarball（./...）两种启动路径
+    pkill -f "demo-spring-1.0.0.jar" 2>/dev/null
     sleep 0.5
 }
 
@@ -22,13 +33,18 @@ cleanup
 
 echo "🚀 构建并启动Spring Boot Demo..."
 cd $SCRIPT_DIR
-mvn clean package -DskipTests > /tmp/spring-demo-build.log 2>&1
-if [ $? -ne 0 ]; then
-    echo "❌ 构建失败"
-    exit 1
+# tarball 场景下 jar 已经预构建，直接跳过 mvn
+if [ "$LAYOUT" = "repo" ]; then
+    mvn clean package -DskipTests > /tmp/spring-demo-build.log 2>&1
+    if [ $? -ne 0 ]; then
+        echo "❌ 构建失败"
+        exit 1
+    fi
 fi
+[ -f "$APP_JAR" ] || { echo "❌ demo jar 不存在: $APP_JAR"; exit 1; }
+[ -f "$AGENT_JAR" ] || { echo "❌ Agent jar 不存在: $AGENT_JAR"; exit 1; }
 
-setsid java -jar target/demo-spring-1.0.0.jar > $DEMO_LOG 2>&1 < /dev/null &
+setsid java -jar "$APP_JAR" > $DEMO_LOG 2>&1 < /dev/null &
 DEMO_PID=$!
 echo $DEMO_PID > $PID_FILE
 echo "✅ Demo程序PID: $DEMO_PID"
@@ -49,7 +65,7 @@ triggerFileCheck() {
 echo "========================================"
 echo "1. 首次挂载Agent，开启监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID config=../demo-spring/iast-monitor.yaml
+java -jar "$AGENT_JAR" $DEMO_PID config="$CONFIG_YAML"
 sleep 5
 
 IAST_LOG="/tmp/iast-agent-$DEMO_PID.log"
@@ -80,7 +96,7 @@ fi
 echo "========================================"
 echo "2. 执行stop命令，停止监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID stop config=../demo-spring/iast-monitor.yaml
+java -jar "$AGENT_JAR" $DEMO_PID stop config="$CONFIG_YAML"
 sleep 2
 
 triggerFileCheck
@@ -107,7 +123,7 @@ fi
 echo "========================================"
 echo "3. 执行start命令，重新开启监控..."
 echo "========================================"
-cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID start config=../demo-spring/iast-monitor.yaml
+java -jar "$AGENT_JAR" $DEMO_PID start config="$CONFIG_YAML"
 sleep 2
 
 START_COUNT1=$(count_hits)
@@ -249,7 +265,7 @@ echo "========================================"
 cleanup
 # 把jar拷到/tmp，避免相对路径/cwd继承问题
 DEMO_JAR="/tmp/demo-spring-test.jar"
-cp -f "$SCRIPT_DIR/target/demo-spring-1.0.0.jar" "$DEMO_JAR" || { echo "❌ 无法复制 demo-spring jar"; exit 1; }
+cp -f "$APP_JAR" "$DEMO_JAR" || { echo "❌ 无法复制 demo-spring jar"; exit 1; }
 setsid java -jar "$DEMO_JAR" > $DEMO_LOG 2>&1 < /dev/null &
 sleep 3
 # setsid在某些环境会fork，$!可能不是java进程。用pgrep拿最新的java pid
@@ -283,7 +299,7 @@ if command -v jattach > /dev/null 2>&1; then
 fi
 
 # -DiastAttach=fallback 强制走 byte-buddy-agent；PATH 里也没有 jattach，双重保险
-cd $SCRIPT_DIR/../agent && PATH="$NO_JATTACH_PATH" java -DiastAttach=fallback -jar target/iast-agent.jar $DEMO_PID2 config=../demo-spring/iast-monitor.yaml
+PATH="$NO_JATTACH_PATH" java -DiastAttach=fallback -jar "$AGENT_JAR" $DEMO_PID2 config="$CONFIG_YAML"
 sleep 3
 cd $SCRIPT_DIR
 
@@ -324,7 +340,7 @@ if command -v jattach > /dev/null 2>&1; then
         fi
         sleep 1
     done
-    cd $SCRIPT_DIR/../agent && java -DiastAttach=jattach -jar target/iast-agent.jar $DEMO_PID3 config=../demo-spring/iast-monitor.yaml
+    java -DiastAttach=jattach -jar "$AGENT_JAR" $DEMO_PID3 config="$CONFIG_YAML"
     sleep 3
     cd $SCRIPT_DIR
 

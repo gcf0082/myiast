@@ -11,8 +11,14 @@ set -e
 cd "$(dirname "$0")"
 SCRIPT_DIR="$(pwd)"
 
-AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
-APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
+# Layout 自适应：tarball（agent jar 在 ../）vs 源码仓（agent 模块 target/）
+if [ -f "$SCRIPT_DIR/../iast-agent.jar" ]; then
+    AGENT_JAR="$SCRIPT_DIR/../iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/demo-spring-1.0.0.jar"
+else
+    AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
+fi
 CONFIG="$SCRIPT_DIR/iast-monitor.yaml"
 EXTRA_AGENT_ARGS="${1:-}"
 

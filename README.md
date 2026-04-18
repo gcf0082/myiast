@@ -11,6 +11,7 @@ Java Agent 实现的交互式应用安全测试工具，支持监控任意JDK方
 - ✅ **接口级监控**：`matchType: interface` 一行规则覆盖所有实现类（含后加载的，可开关）
 - ✅ **premain 启动友好**：默认延迟 1 分钟再 install 字节码，业务启动期零拦截开销
 - ✅ **交互式 CLI**：arthas 风格的 REPL，实时查规则 / 插件 / 已加载类（WebSocket，仅 loopback）
+- ✅ **外部插件扩展**：扔一个独立 jar 到 `pluginsDir` 目录即可加入新插件，SDK 独立发布供插件作者 compile 依赖
 - ✅ 完全兼容Java 8 ~ Java 21
 - ✅ 无需额外启动参数（无需`-Xbootclasspath/a`）
 
@@ -106,6 +107,30 @@ iast> quit
 `/tmp/iast-agent-<pid>.port`），只 bind loopback、不暴露外网卡。完整命令表和协议细节看
 [`agent/README.md`](agent/README.md#交互式-cli-arthas-风格)。
 
+### 5. 外部插件（第三方 jar 扩展）
+
+把自己写的插件 jar 丢进一个目录，agent 启动扫一遍自动加载。完整教程见
+[`iast-plugin-demo/README.md`](iast-plugin-demo/README.md)。
+
+```bash
+# 1. 你的插件模块 pom.xml 依赖 iast-sdk（provided）
+# 2. 实现 IastPlugin，加 META-INF/services/com.iast.agent.plugin.IastPlugin（列 FQCN）
+# 3. mvn package，把 jar 放进某目录
+mkdir -p /opt/iast/plugins
+cp my-plugin/target/my-plugin.jar /opt/iast/plugins/
+
+# 4. iast-monitor.yaml 开启外部加载：
+cat <<'YAML'
+monitor:
+  default:
+    pluginsDir: /opt/iast/plugins        # 扫这个目录下所有 .jar
+  rules:
+    - className: java.io.File
+      methods: ["exists#()Z"]
+      plugin: MyPlugin                   # 要和 getName() 一致
+YAML
+```
+
 ## 方法描述符说明
 | Java方法声明 | 描述符 |
 |--------------|--------|
@@ -136,6 +161,16 @@ iast> quit
 │   └── src/main/java/com/iast/cli/
 │       ├── CliClient.java     # REPL 客户端（raw-mode tty line editing）
 │       └── WsFrame.java       # RFC 6455 text/close frame 编解码（客户端视角）
+├── iast-sdk/                  # 公共 SDK，插件作者 <scope>provided</scope> 依赖
+│   └── src/main/java/com/iast/agent/
+│       ├── LogWriter.java     + plugin/{IastPlugin, MethodContext, IastContext,
+│       │                            RequestIdHolder}.java
+│       └── plugin/event/{EventWriter, Expression, JsonWriter}.java
+├── iast-plugin-demo/          # 参考插件实现，复制改改就能上
+│   ├── pom.xml                # 依赖 iast-sdk provided
+│   └── src/main/
+│       ├── java/com/iast/plugin/demo/HelloPlugin.java
+│       └── resources/META-INF/services/com.iast.agent.plugin.IastPlugin
 ├── dist.sh                 # 发布打包脚本
 └── README.md               # 项目说明文档
 ```

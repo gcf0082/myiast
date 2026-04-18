@@ -300,6 +300,35 @@ iast> rules java/io/File                                # internal 也行
 
 `reload`（YAML 热加载）、`trace/watch`（动态注入 advice 追踪某方法的入参/耗时/栈）、身份认证——工程量较大，放到后续 PR。
 
+## 外部插件加载（pluginsDir）
+
+内置 4 个插件（LogPlugin / RequestIdPlugin / CustomEventPlugin / ServletBodyPlugin）
+写死在 agent 里；想加自己的插件不用改 agent 源码——把插件 jar 扔进一个目录，
+`iast-monitor.yaml` 配 `monitor.default.pluginsDir` 指向它，agent 启动时 ServiceLoader
+发现并加载。
+
+```yaml
+monitor:
+  default:
+    pluginsDir: /opt/iast/plugins        # 空字符串 = 不加载外部插件（默认）
+```
+
+**插件 jar 要求**（见 [`iast-plugin-demo/`](../iast-plugin-demo/) 样板）：
+1. 依赖 `com.iast:iast-sdk:1.0.0`（`<scope>provided</scope>`）
+2. 实现 `com.iast.agent.plugin.IastPlugin`
+3. `META-INF/services/com.iast.agent.plugin.IastPlugin` 列出实现类 FQCN（一行一个，
+   一个 jar 可注册多个插件）
+4. `mvn package` 得到 jar，放进 `pluginsDir`
+
+**加载流程**：
+- Agent 启动时把 `pluginsDir/*.jar` 合并成一个 URLClassLoader，parent = agent 所在 CL
+- `ServiceLoader.load(IastPlugin.class, ...)` 遍历、实例化、`init(pluginConfig)`、`PluginManager.registerPlugin`
+- 之后和内置插件**完全等价**：YAML 里 `plugin: <getName()>` 引用；`classPluginMap` 路由；`handleMethodCall` 分派
+
+**冲突策略**：外部插件 `getName()` 和内置撞名（LogPlugin / RequestIdPlugin / CustomEventPlugin / ServletBodyPlugin）→ 打 WARN 日志跳过外部那个；不允许外部覆盖内置实现。
+
+**v1 不做**：插件热加载 / 卸载、多目录、版本兼容校验、沙箱隔离——改插件后需要重启目标 JVM。
+
 ## JSONL 事件格式
 
 每行一个 JSON 对象：

@@ -14,6 +14,9 @@ public class MonitorDefaultConfig {
     // 默认 60000（1 分钟）；设为 0 表示不延迟（立即 install）。
     // agentmain（attach）模式不受此开关影响，始终立即 install。
     private long premainDelayMs = 60_000L;
+    // 外部插件目录：非空时 agent 会扫该目录下所有 *.jar，用 ServiceLoader 加载其中的
+    // com.iast.agent.plugin.IastPlugin 实现。空字符串 = 不加载任何外部插件（默认）。
+    private String pluginsDir = "";
 
     public List<String> getEvents() {
         return events;
@@ -37,5 +40,13 @@ public class MonitorDefaultConfig {
 
     public void setPremainDelayMs(long premainDelayMs) {
         this.premainDelayMs = premainDelayMs;
+    }
+
+    public String getPluginsDir() {
+        return pluginsDir;
+    }
+
+    public void setPluginsDir(String pluginsDir) {
+        this.pluginsDir = pluginsDir == null ? "" : pluginsDir;
     }
 }

@@ -14,11 +14,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 SCRIPT_DIR="$(pwd)"
-AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
-APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
 
-[ -f "$AGENT_JAR" ] || { echo "❌ Agent jar 不存在: $AGENT_JAR (先到 agent/ 跑 mvn package)"; exit 1; }
-[ -f "$APP_JAR" ]   || { echo "❌ demo-spring jar 不存在: $APP_JAR (先到 demo-spring/ 跑 mvn package)"; exit 1; }
+# Layout 自适应：tarball（agent jar 在 ../）vs 源码仓（agent 模块 target/）
+if [ -f "$SCRIPT_DIR/../iast-agent.jar" ]; then
+    AGENT_JAR="$SCRIPT_DIR/../iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/demo-spring-1.0.0.jar"
+else
+    AGENT_JAR="$SCRIPT_DIR/../agent/target/iast-agent.jar"
+    APP_JAR="$SCRIPT_DIR/target/demo-spring-1.0.0.jar"
+fi
+
+[ -f "$AGENT_JAR" ] || { echo "❌ Agent jar 不存在: $AGENT_JAR (源码仓：agent/ 跑 mvn package；tarball：检查文件位置)"; exit 1; }
+[ -f "$APP_JAR" ]   || { echo "❌ demo-spring jar 不存在: $APP_JAR (源码仓：demo-spring/ 跑 mvn package；tarball：检查文件位置)"; exit 1; }
 
 TMP_DIR="$(mktemp -d -t iast-iftest-XXXX)"
 trap 'rc=$?; kill_demo; rm -rf "$TMP_DIR"; exit $rc' EXIT INT TERM

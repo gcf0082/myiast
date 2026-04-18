@@ -20,6 +20,14 @@
     </properties>
 
     <dependencies>
+        <!-- 公共 SDK：IastPlugin / MethodContext / LogWriter / EventWriter 等
+             插件作者会直接引这个模块；agent 内部也依赖它编译通过。shade 时会把 SDK 类打进 fat jar，
+             运行期位于 bootstrap CL，外部插件 URLClassLoader 的 parent 委派能找到同一份 Class. -->
+        <dependency>
+            <groupId>com.iast</groupId>
+            <artifactId>iast-sdk</artifactId>
+            <version>1.0.0</version>
+        </dependency>
         <dependency>
             <groupId>net.bytebuddy</groupId>
             <artifactId>byte-buddy</artifactId>

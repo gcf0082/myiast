@@ -33,6 +33,8 @@ public class MonitorConfig {
     private static volatile boolean includeFutureClasses = false;
     // premain 模式下字节码 install 的延迟毫秒数，默认 1 分钟
     private static volatile long premainDelayMs = 60_000L;
+    // 外部插件目录（存放 plugin jar）。空字符串 = 不加载外部插件
+    private static volatile String pluginsDir = "";
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
@@ -149,6 +151,19 @@ public class MonitorConfig {
             premainDelayMs = Math.max(0L, d);
             if (premainDelayMs != 60_000L) {
                 LogWriter.getInstance().info("[IAST Agent] premainDelayMs override: " + premainDelayMs + "ms");
+            }
+            String pd = defCfg.getPluginsDir();
+            pluginsDir = pd == null ? "" : pd.trim();
+            // 相对路径按**本 yaml 文件所在目录**解析，不是 JVM 的 CWD——避免被业务进程启动目录
+            // 坑了（尤其是 agentmain attach 场景下调用方的 CWD 常常是控制台当前目录）
+            if (!pluginsDir.isEmpty() && !new File(pluginsDir).isAbsolute()) {
+                File cfgParent = new File(configFilePath).getAbsoluteFile().getParentFile();
+                if (cfgParent != null) {
+                    pluginsDir = new File(cfgParent, pluginsDir).getAbsolutePath();
+                }
+            }
+            if (!pluginsDir.isEmpty()) {
+                LogWriter.getInstance().info("[IAST Agent] pluginsDir: " + pluginsDir);
             }
         }
 
@@ -344,6 +359,13 @@ public class MonitorConfig {
      */
     public static long getPremainDelayMs() {
         return premainDelayMs;
+    }
+
+    /**
+     * 外部插件目录；空字符串表示不加载外部插件。
+     */
+    public static String getPluginsDir() {
+        return pluginsDir;
     }
 
     /**

@@ -38,13 +38,13 @@ jobs:
       - name: Build distribution
         env:
           IAST_VERSION: ${{ inputs.version }}
-        run: bash agent/dist.sh
+        run: bash dist.sh
 
       - name: Verify artifact
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          TARBALL="agent/dist/iast-agent-${VERSION}.tar.gz"
+          TARBALL="dist/iast-agent-${VERSION}.tar.gz"
           if [ ! -f "$TARBALL" ]; then
             echo "❌ tarball not found: $TARBALL"
             exit 1
@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          TARBALL="agent/dist/iast-agent-${VERSION}.tar.gz"
+          TARBALL="dist/iast-agent-${VERSION}.tar.gz"
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "⚠️  release $TAG 已存在，自动删除旧版本并重建..."

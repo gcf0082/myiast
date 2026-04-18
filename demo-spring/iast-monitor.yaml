@@ -17,6 +17,9 @@ monitor:
     # demo 需要立即看到拦截日志，所以这里把 premain 延迟设为 0；
     # 生产环境建议保留默认 60000（1 分钟），让业务先把启动走完再 install。
     premainDelayMs: 0
+    # 外部插件目录。**相对路径按本 yaml 文件所在目录解析**（而不是 JVM 的 CWD），
+    # 所以 demo/plugins/ 下放任何插件 jar，无论从哪个目录启动都能找到。
+    pluginsDir: ./plugins
   rules:
     # Step 1-3 使用：CustomEventPlugin 基础拦截（File 的创建 / 存在性 / 绝对路径）
     - className: java.io.File
@@ -124,3 +127,13 @@ monitor:
         event_type: demo.repeat
         event_level: info
         on: [exit]
+
+    # 外部插件样例：HelloPlugin（iast-plugin-demo.jar 放在同目录的 plugins/ 下）
+    # 挂到 /api/hello 接口，访问一次就能在 /tmp/iast-agent-<pid>.log 看到 [HelloPlugin]
+    # 日志行，证明外部 plugin 加载 + ServiceLoader 发现 + 规则分派三段链路都通
+    - className: com.iast.demo.FileCheckController
+      methods:
+        - "hello#()Ljava/lang/String;"
+      plugin: HelloPlugin
+      pluginConfig:
+        prefix: "HelloPlugin"
