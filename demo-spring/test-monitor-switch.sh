@@ -53,18 +53,26 @@ cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID config=../d
 sleep 5
 
 IAST_LOG="/tmp/iast-agent-$DEMO_PID.log"
+EVENT_LOG="/tmp/iast-events-$DEMO_PID.jsonl"
+# 统计"被拦截的方法调用数"：yaml 里 File/Files 的所有规则都走 CustomEventPlugin，
+# 产出 event_type=file.* 的 JSONL 事件，用它来衡量监控是否真在 hook。
+count_hits() {
+    [ -f "$EVENT_LOG" ] || { echo 0; return; }
+    grep -cE '"event_type":"file\.(io|exists|list)' "$EVENT_LOG" || echo 0
+}
+
 echo "📝 触发File.exists调用..."
 triggerFileCheck
 sleep 2
 triggerFileCheck
 sleep 2
 
-BEFORE_STOP_COUNT=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
-echo "   停止前拦截日志数量: $BEFORE_STOP_COUNT"
+BEFORE_STOP_COUNT=$(count_hits)
+echo "   停止前拦截事件数量: $BEFORE_STOP_COUNT"
 if [ $BEFORE_STOP_COUNT -gt 0 ]; then
     echo "✅ 监控开启正常，拦截生效"
 else
-    echo "❌ 监控开启失败，无拦截日志"
+    echo "❌ 监控开启失败，无拦截事件"
     cleanup
     exit 1
 fi
@@ -78,15 +86,15 @@ sleep 2
 triggerFileCheck
 sleep 1
 
-STOP_COUNT1=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
-echo "📝 停止后第1次统计拦截日志数量: $STOP_COUNT1"
+STOP_COUNT1=$(count_hits)
+echo "📝 停止后第1次统计拦截事件数量: $STOP_COUNT1"
 sleep 3
 
 triggerFileCheck
 sleep 1
 
-STOP_COUNT2=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
-echo "📝 停止后第2次统计拦截日志数量: $STOP_COUNT2"
+STOP_COUNT2=$(count_hits)
+echo "📝 停止后第2次统计拦截事件数量: $STOP_COUNT2"
 
 if [ $STOP_COUNT1 -eq $STOP_COUNT2 ]; then
     echo "✅ 监控停止成功"
@@ -102,8 +110,8 @@ echo "========================================"
 cd $SCRIPT_DIR/../agent && java -jar target/iast-agent.jar $DEMO_PID start config=../demo-spring/iast-monitor.yaml
 sleep 2
 
-START_COUNT1=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
-echo "📝 恢复后第1次统计拦截日志数量: $START_COUNT1"
+START_COUNT1=$(count_hits)
+echo "📝 恢复后第1次统计拦截事件数量: $START_COUNT1"
 sleep 2
 
 triggerFileCheck
@@ -111,8 +119,8 @@ sleep 1
 triggerFileCheck
 sleep 1
 
-START_COUNT2=$(grep "Method Call Intercepted" $IAST_LOG | wc -l)
-echo "📝 恢复后第2次统计拦截日志数量: $START_COUNT2"
+START_COUNT2=$(count_hits)
+echo "📝 恢复后第2次统计拦截事件数量: $START_COUNT2"
 
 if [ $START_COUNT2 -gt $START_COUNT1 ]; then
     echo "✅ 监控恢复成功"
@@ -140,6 +148,8 @@ fi
 sleep 1
 
 echo "📝 检查日志中是否包含requestId..."
+# RequestIdPlugin 写 [IAST RequestId] 到 agent log，ServletBody / CustomEventPlugin 事件 JSONL
+# 的 JSON 里也有 "requestId" 字段；agent log 里任一行命中都算数。
 LOG_COUNT=$(grep "requestId=$REQUEST_ID" $IAST_LOG | wc -l)
 if [ $LOG_COUNT -eq 0 ]; then
     echo "❌ 日志中未找到对应requestId的记录"
@@ -149,13 +159,18 @@ else
     echo "✅ 日志中找到 $LOG_COUNT 条包含requestId=$REQUEST_ID 的记录"
 fi
 
-echo "📝 验证同一个请求的requestId一致..."
-# 同一个请求的所有方法调用应该有相同的requestId
-UNIQUE_IDS=$(grep "requestId=" $IAST_LOG | grep "Method Call Intercepted: java.io.File" | awk -F'requestId=' '{print $2}' | awk -F']' '{print $1}' | sort -u | wc -l)
+echo "📝 验证不同请求拥有不同的requestId..."
+# 从事件 JSONL 里抽 file.io 事件的 requestId 去重（每个 File/Files 调用都带一份 requestId）
+UNIQUE_IDS=0
+if [ -f "$EVENT_LOG" ]; then
+    UNIQUE_IDS=$(grep '"event_type":"file.io"' "$EVENT_LOG" \
+                 | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p' \
+                 | sort -u | wc -l)
+fi
 if [ $UNIQUE_IDS -ge 2 ]; then
-    echo "✅ 不同请求拥有不同的requestId，符合预期"
+    echo "✅ 不同请求拥有不同的requestId，符合预期（共 $UNIQUE_IDS 个）"
 else
-    echo "⚠️  仅检测到一个requestId，可能需要更多请求验证"
+    echo "⚠️  仅检测到 $UNIQUE_IDS 个 requestId，可能需要更多请求验证"
 fi
 
 echo "========================================"
@@ -173,9 +188,9 @@ if [ ! -f "$EVENT_LOG" ]; then
     cleanup
     exit 1
 fi
-LINE=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG" | tail -1)
+LINE=$(grep '"event_type":"file.list"' "$EVENT_LOG" | tail -1)
 if [ -z "$LINE" ]; then
-    echo "❌ 未找到 java.nio.file.Files.list 事件"
+    echo "❌ 未找到 event_type=file.list 的事件"
     echo "事件日志内容："
     cat "$EVENT_LOG"
     cleanup
@@ -184,23 +199,11 @@ fi
 echo "   事件行: $LINE"
 echo "$LINE" | grep -q '"event":"file list | /tmp"' \
     || { echo "❌ 事件模板渲染不符合预期"; cleanup; exit 1; }
-echo "$LINE" | grep -q '"event_type":"file.list"' \
-    || { echo "❌ event_type 不符合预期"; cleanup; exit 1; }
 echo "$LINE" | grep -q '"event_level":"info"' \
     || { echo "❌ event_level 不符合预期"; cleanup; exit 1; }
 echo "$LINE" | grep -q '"params":{"file_path":"/tmp"}' \
     || { echo "❌ params 解析错误"; cleanup; exit 1; }
 echo "✅ CustomEventPlugin params[0] 表达式验证通过"
-
-echo "📝 验证同一方法挂多个插件（Files.list 同时走 CustomEventPlugin + LogPlugin）..."
-# CustomEventPlugin 已在上面的 $LINE 验证。这里检查 LogPlugin 在同一次调用里也出了一条拦截日志
-LOG_MATCH=$(grep "Method Call Intercepted: java.nio.file.Files.list" $IAST_LOG | wc -l)
-if [ $LOG_MATCH -lt 1 ]; then
-    echo "❌ LogPlugin 未拦截 Files.list，多插件分发失败"
-    cleanup
-    exit 1
-fi
-echo "✅ LogPlugin 同步拦截 Files.list（$LOG_MATCH 条），多插件分发生效"
 
 echo "📝 验证 target / params[N] / return 表达式..."
 curl -s "http://127.0.0.1:8080/api/echo?msg=hi&times=3" > /dev/null
@@ -227,16 +230,18 @@ echo "$LINE2" | grep -q '"phase":"exit"' \
 echo "✅ CustomEventPlugin target/params[N]/return 全部验证通过"
 
 echo "📝 验证反射调用也能被拦截（/api/reflect-exists → Method.invoke(Files.exists)）..."
-REFLECT_BEFORE=$(grep "Method Call Intercepted: java.nio.file.Files.exists" $IAST_LOG | wc -l)
+# Files.exists 挂 CustomEventPlugin，事件 event_type=file.exists
+# 注：grep -c 零匹配时 stdout 打 "0" 但 exit 1；不要再用 "|| echo 0" 否则会拼成 "0\n0"
+REFLECT_BEFORE=$(grep -c '"event_type":"file.exists"' "$EVENT_LOG" 2>/dev/null); REFLECT_BEFORE=${REFLECT_BEFORE:-0}
 curl -s "http://127.0.0.1:8080/api/reflect-exists?path=/tmp" > /dev/null
 sleep 1
-REFLECT_AFTER=$(grep "Method Call Intercepted: java.nio.file.Files.exists" $IAST_LOG | wc -l)
-if [ $REFLECT_AFTER -le $REFLECT_BEFORE ]; then
+REFLECT_AFTER=$(grep -c '"event_type":"file.exists"' "$EVENT_LOG" 2>/dev/null); REFLECT_AFTER=${REFLECT_AFTER:-0}
+if [ "$REFLECT_AFTER" -le "$REFLECT_BEFORE" ]; then
     echo "❌ 反射调用未被拦截：before=$REFLECT_BEFORE after=$REFLECT_AFTER"
     cleanup
     exit 1
 fi
-echo "✅ 反射调用拦截生效（Files.exists 拦截数 $REFLECT_BEFORE → $REFLECT_AFTER）"
+echo "✅ 反射调用拦截生效（file.exists 事件数 $REFLECT_BEFORE → $REFLECT_AFTER）"
 
 echo "========================================"
 echo "6. 测试 JRE 无 jattach 场景：byte-buddy-agent 兜底..."

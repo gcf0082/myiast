@@ -116,19 +116,21 @@ monitor:
       methods:
         - "<methodName>#<descriptor>"   # 具体签名，"<init>" 为构造函数
         - "<methodName>#*"               # 通配任意签名
-      plugin: <LogPlugin | RequestIdPlugin | CustomEventPlugin>
-      pluginConfig: {...}                # 仅 CustomEventPlugin 使用
+      plugin: <CustomEventPlugin | RequestIdPlugin | ServletBodyPlugin | LogPlugin>
+      pluginConfig: {...}                # CustomEventPlugin / ServletBodyPlugin 用
 ```
 
 内置插件：
 
-| 插件 | 作用 |
-|-----|------|
-| LogPlugin | 人读日志（调用、参数、返回值、栈） |
-| RequestIdPlugin | 为 HttpServlet 请求生成 UUID → ThreadLocal + 响应头 X-Request-Id |
-| CustomEventPlugin | 按 YAML 表达式提取参数、渲染模板、写 JSONL |
+| 插件 | 作用 | 按 className 筛规则？ |
+|-----|------|---------------------|
+| CustomEventPlugin | 按 YAML 表达式提取参数 / 渲染模板 / 写 JSONL 结构化事件 | **是**（只在 exact 规则下稳定工作） |
+| RequestIdPlugin | 为每个请求生成 / 复用 X-Request-Id，挂到 ThreadLocal + 响应头 | 否（任何分派进来都跑） |
+| ServletBodyPlugin | 改写 `service` 入参为缓冲 wrapper，记录请求 body | 否（仅对显式标 `wrapServletRequest: true` 的规则生效） |
+| LogPlugin | 人读日志（调用、参数、返回值、栈） | 否；注：默认配置样例里已不用它，改推荐 CustomEventPlugin 走 JSONL |
 
 **同一方法可挂多个插件**——对同一 className 写多条规则即可，按声明顺序依次分发。
+**但不要挂两条 CustomEventPlugin 在同一 (className, methodName) 对上**——它内部按 className+methodName 去重 key，后一条会覆盖前一条；多插件分发要用**不同类型**的插件组合。
 
 ### CustomEventPlugin 表达式语法
 
@@ -175,16 +177,24 @@ monitor:
     includeFutureClasses: false   # 是否把"Agent install 之后"才加载的实现类也纳入监控
   rules:
     # 监控所有 jakarta.servlet.Servlet 实现的 service(ServletRequest,ServletResponse)
+    # interface 规则推荐挂 RequestIdPlugin / ServletBodyPlugin 这种不按 className 筛规则的
+    # 插件；CustomEventPlugin 在 interface 规则下运行期 className 是具体实现（如 HttpServlet），
+    # 和规则注册时的接口名 (Servlet) 对不上，会静默不发事件。
     - className: jakarta.servlet.Servlet
       matchType: interface
       methods:
         - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: LogPlugin
+      plugin: RequestIdPlugin
 
-    # 老写法（exact）还是可用，两种可以混合
+    # exact 规则下 CustomEventPlugin 正常工作（className 运行期和规则注册时一致）
     - className: java.nio.file.Files
       methods: ["exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"]
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          path: "params[0].toString()"
+        event: "Files.exists({path})"
+        event_type: file.exists
 ```
 
 `includeFutureClasses` 全局开关：

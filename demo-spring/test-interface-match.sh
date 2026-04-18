@@ -7,8 +7,8 @@
 #   case B  includeFutureClasses=false + premain  → 预装快照里没有 DispatcherServlet，
 #                                                    不应出现接口规则产生的 service() 拦截日志
 #
-# 通过 LogPlugin 在 /tmp/iast-agent-<pid>.log 的 "Method Call Intercepted: jakarta.servlet.http.HttpServlet.service"
-# 计数来判定。
+# 通过 RequestIdPlugin 在 /tmp/iast-agent-<pid>.log 写的 "[IAST RequestId]...Request Started"
+# 行数来判定（RequestIdPlugin 不按 className 过滤规则，interface 分派进来它就会跑）。
 
 set -euo pipefail
 
@@ -58,7 +58,7 @@ monitor:
       matchType: interface
       methods:
         - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: LogPlugin
+      plugin: RequestIdPlugin
 EOF
     echo "$path"
 }
@@ -113,23 +113,18 @@ run_case() {
     local interface_rule_cnt dispatcher_cnt service_hit_cnt
     interface_rule_cnt=$(grep -cE "Interface rule: match all implementations of jakarta\.servlet\.Servlet" "$iast_log" || true)
     dispatcher_cnt=$(grep -cE "Transformed: org\.springframework\.web\.servlet\.DispatcherServlet" "$iast_log" || true)
-    service_hit_cnt=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+    # RequestIdPlugin 每次 service() 入口打一行 "Request Started"，直接数即可
+    service_hit_cnt=$(grep -cE "\[IAST RequestId\].*Request Started" "$iast_log" || true)
 
     echo "  Interface 规则已装载行数: $interface_rule_cnt"
     echo "  DispatcherServlet Transformed 次数: $dispatcher_cnt"
-    echo "  HttpServlet.service 拦截次数: $service_hit_cnt"
+    echo "  Request Started 行数（接口规则下 RequestIdPlugin 触发计数）: $service_hit_cnt"
 
-    # 打印一条完整的拦截记录（含 this/args/return/duration），让开发者肉眼确认函数调用确实被 hook
+    # 打印一条完整的 Request Started 日志，让开发者肉眼确认函数调用确实被 hook
     if [ "$service_hit_cnt" -gt 0 ]; then
-        echo "  ---------- 示例拦截记录 ----------"
-        local first_line
-        first_line=$(grep -nE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" \
-                      | head -1 | cut -d: -f1)
-        if [ -n "$first_line" ]; then
-            awk -v s="$first_line" -v e=$((first_line + 7)) \
-                'NR>=s && NR<=e { print "    " $0 }' "$iast_log"
-        fi
-        echo "  ---------------------------------"
+        echo "  ---------- 示例 Request Started ----------"
+        grep -E "\[IAST RequestId\].*Request Started" "$iast_log" | head -1 | sed 's/^/    /'
+        echo "  -------------------------------------------"
     fi
 
     kill_demo
@@ -209,7 +204,7 @@ run_delay_case() {
     curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
     sleep 1
     local during_hits
-    during_hits=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+    during_hits=$(grep -cE "\[IAST RequestId\].*Request Started" "$iast_log" || true)
     echo "  延迟期间拦截次数: $during_hits"
     if [ "$during_hits" -ne 0 ]; then
         echo "❌ 延迟生效前不应有拦截（实际 $during_hits）"
@@ -232,7 +227,7 @@ run_delay_case() {
     curl -s http://127.0.0.1:8080/api/hello -o /dev/null -w "" || true
     sleep 1
     local after_hits
-    after_hits=$(grep -cE "Method Call Intercepted: jakarta\.servlet\.http\.HttpServlet\.service" "$iast_log" || true)
+    after_hits=$(grep -cE "\[IAST RequestId\].*Request Started" "$iast_log" || true)
     echo "  延迟到期后拦截次数: $after_hits"
 
     kill_demo

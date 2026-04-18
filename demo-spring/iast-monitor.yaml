@@ -18,19 +18,30 @@ monitor:
     # 生产环境建议保留默认 60000（1 分钟），让业务先把启动走完再 install。
     premainDelayMs: 0
   rules:
-    # Step 1-3 使用：LogPlugin 基础拦截日志
+    # Step 1-3 使用：CustomEventPlugin 基础拦截（File 的创建 / 存在性 / 绝对路径）
     - className: java.io.File
       methods:
         - "<init>#*"
         - "exists#()Z"
         - "getAbsolutePath#()Ljava/lang/String;"
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          method: "methodName"
+          arg0: "params[0]"
+        event: "java.io.File.{method}({arg0})"
+        event_type: file.io
 
     # 反射调用也能拦截：/api/reflect-exists 通过 Method.invoke 调用 Files.exists
     - className: java.nio.file.Files
       methods:
         - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          path: "params[0].toString()"
+        event: "Files.exists({path})"
+        event_type: file.exists
 
     # Step 4 使用：Servlet 请求 ID 跟踪
     - className: jakarta.servlet.http.HttpServlet
@@ -45,14 +56,24 @@ monitor:
       matchType: interface
       methods:
         - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          impl: "target.getClass().getName()"
+        event: "javax Servlet.service | {impl}"
+        event_type: servlet.service.javax
 
     # 接口匹配示例 B：jakarta.servlet.Servlet（demo-spring 实际使用的命名空间）
     - className: jakarta.servlet.Servlet
       matchType: interface
       methods:
         - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          impl: "target.getClass().getName()"
+        event: "jakarta Servlet.service | {impl}"
+        event_type: servlet.service.jakarta
 
     # ServletBodyPlugin：打印请求 body。
     # wrapServletRequest=true 触发 ServletBodyAdvice，运行期把 arg[0] 换成缓冲 wrapper，
@@ -72,8 +93,9 @@ monitor:
           - text/
         charset: UTF-8
 
-    # Step 5a 使用：CustomEventPlugin，演示 params[0] 取参
-    # 同一个方法也挂上 LogPlugin，验证"一个函数多个插件处理"——两份日志都会出
+    # Step 5a 使用：CustomEventPlugin，演示 params[0] 取参。
+    # （注：同一方法只能挂一条 CustomEventPlugin 规则——其内部 key 是 className+methodName，
+    #       多条会彼此覆盖；若想"一个方法多个处理逻辑"，需要不同 plugin 类型）
     - className: java.nio.file.Files
       methods:
         - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
@@ -85,11 +107,6 @@ monitor:
         event: "file list | {file_path}"
         event_type: file.list
         event_level: info
-
-    - className: java.nio.file.Files
-      methods:
-        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
-      plugin: LogPlugin
 
     # Step 5b 使用：CustomEventPlugin，演示 target / params[N] / return / 链式方法调用
     - className: com.iast.demo.FileCheckController

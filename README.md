@@ -32,15 +32,24 @@ monitor:
     includeFutureClasses: false   # 接口规则是否覆盖后加载的实现类
     premainDelayMs: 60000         # premain 模式延迟 install 字节码（毫秒），0=立即
   rules:
-    # 精确类名
+    # 精确类名 + CustomEventPlugin：结构化 JSONL 事件
     - className: java.io.File
       methods: ["exists#()Z", "getAbsolutePath#()Ljava/lang/String;"]
-      plugin: LogPlugin
+      plugin: CustomEventPlugin
+      pluginConfig:
+        my_params:
+          method: "methodName"
+          arg0: "params[0]"
+        event: "java.io.File.{method}({arg0})"
+        event_type: file.io
     # 接口级：所有实现 jakarta.servlet.Servlet 的具体类 + 声明方法体的抽象父类都会被 hook
+    # 注意：接口规则下推荐挂 RequestIdPlugin / ServletBodyPlugin 这类不按 className 筛规则
+    # 的插件；CustomEventPlugin 的规则 key 按 className+methodName 精确匹配，接口规则下会
+    # 命中不上（运行期 className 是具体类，def 注册在接口类名上）。
     - className: jakarta.servlet.Servlet
       matchType: interface
       methods: ["service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"]
-      plugin: LogPlugin
+      plugin: RequestIdPlugin
 ```
 
 字段详解看 [`agent/README.md`](agent/README.md)。
