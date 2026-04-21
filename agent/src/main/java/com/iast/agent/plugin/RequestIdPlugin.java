@@ -10,7 +10,9 @@ import java.util.UUID;
  * 拦截Servlet请求，生成UUID作为requestId，记录日志并设置响应头
  */
 public class RequestIdPlugin implements IastPlugin {
-    private static final String INCOMING_HEADER = "X-Request-Id";
+    /** 请求和响应头都用同一个名字；上游传入 / 响应回写都围绕这个 key */
+    private static final String HEADER_NAME = "X-Request-Id";
+    private static final String INCOMING_HEADER = HEADER_NAME;
 
     private LogWriter logWriter;
 
@@ -31,7 +33,7 @@ public class RequestIdPlugin implements IastPlugin {
     }
     
     private void handleEnter(MethodContext context) {
-        // 嵌套调用（如service(ServletRequest)内部再调用service(HttpServletRequest)）复用同一个requestId
+        // 嵌套调用（如 service(ServletRequest) 内部再调用 service(HttpServletRequest)）复用同一个 requestId
         int depth = RequestIdHolder.enter();
         String requestId = RequestIdHolder.get();
         boolean newId = (requestId == null);
@@ -46,40 +48,81 @@ public class RequestIdPlugin implements IastPlugin {
 
         context.setRequestId(requestId);
 
-        // 只有最外层入口设置响应头，此时响应还未提交，Tomcat 才会把 header 带出去。
-        // 排查"响应头消失"的常见原因都靠下面这几条 debug 日志锁定：depth!=1（嵌套）/ args 不够 /
-        // response 是包装类没有 addHeader / addHeader 真抛异常
+        // 强制保证响应头一定带 X-Request-Id：每次 enter 都尝试一次，用 setHeader（替换）而不是
+        // addHeader（追加），这样嵌套调用多次尝试也不会产生重复头；已经有同值则是幂等的。
+        // containsHeader 先探查：如果上游过滤器已经设过（相同或不同值），就不再覆盖，尊重既有值。
         int argsLen = context.getArgs() == null ? 0 : context.getArgs().length;
-        if (depth == 1 && argsLen >= 2) {
+        if (argsLen >= 2) {
             Object response = context.getArgs()[1];
-            String responseClass = response == null ? "null" : response.getClass().getName();
-            try {
-                Method addHeaderMethod = response.getClass().getMethod("addHeader", String.class, String.class);
-                addHeaderMethod.invoke(response, "X-Request-Id", requestId);
-                if (logWriter.isDebugEnabled()) {
-                    logWriter.debug("[IAST RequestId] [callId=" + context.getCallId() + "] addHeader OK on "
-                            + responseClass + " (requestId=" + requestId + ", incoming=" + (newId ? "no" : "yes") + ")");
-                }
-            } catch (NoSuchMethodException e) {
-                // response 包装类没暴露 addHeader（少见——典型 HttpServletResponse / ResponseFacade 都有）。
-                // 用 WARN：业务能跑、但本插件的核心承诺 X-Request-Id 头丢了
-                logWriter.warn("[IAST RequestId] [callId=" + context.getCallId() + "] addHeader missing on "
-                        + responseClass + ": header NOT set (requestId=" + requestId + ")");
-            } catch (Exception e) {
-                Throwable cause = (e.getCause() != null) ? e.getCause() : e;
-                logWriter.warn("[IAST RequestId] [callId=" + context.getCallId() + "] addHeader threw on "
-                        + responseClass + ": " + cause.getClass().getSimpleName() + ": " + cause.getMessage()
-                        + " (requestId=" + requestId + ", header NOT set)");
-            }
+            ensureResponseHeader(response, requestId, context.getCallId(), depth);
         } else if (logWriter.isDebugEnabled()) {
-            // 跳过 addHeader 的两种"正常"原因；启 debug 时显式标出来
-            String reason = (depth != 1) ? "nested call (depth=" + depth + ")"
-                                         : "args.length=" + argsLen + " (<2, expected req+res — service overload?)";
             logWriter.debug("[IAST RequestId] [callId=" + context.getCallId()
-                    + "] skip addHeader: " + reason + " (requestId=" + requestId + ")");
+                    + "] skip setHeader: args.length=" + argsLen
+                    + " (<2, expected req+res — service overload?) (requestId=" + requestId + ")");
         }
 
         logWriter.info("[IAST RequestId] [callId=" + context.getCallId() + "] [requestId=" + requestId + "] === Request Started (depth=" + depth + ") ===");
+    }
+
+    /**
+     * 幂等地把 X-Request-Id 写到响应上。
+     * <ul>
+     *   <li>response 已有 X-Request-Id（任意值）→ 不覆盖，尊重上游/业务已有设置</li>
+     *   <li>否则调 setHeader（注意不是 addHeader）—— setHeader 会替换同名值，嵌套调用多次
+     *       也只会留一份头，不会出现多个 X-Request-Id 行</li>
+     *   <li>setHeader 不存在时（极少见的 response 包装）退回 addHeader，总比没有好</li>
+     * </ul>
+     */
+    private void ensureResponseHeader(Object response, String requestId, long callId, int depth) {
+        if (response == null) {
+            logWriter.warn("[IAST RequestId] [callId=" + callId + "] response arg is null; header NOT set (requestId=" + requestId + ")");
+            return;
+        }
+        String responseClass = response.getClass().getName();
+        Class<?> cls = response.getClass();
+        try {
+            // 1) containsHeader：上游已有就尊重，不覆盖
+            try {
+                Method contains = cls.getMethod("containsHeader", String.class);
+                Object r = contains.invoke(response, HEADER_NAME);
+                if (Boolean.TRUE.equals(r)) {
+                    if (logWriter.isDebugEnabled()) {
+                        logWriter.debug("[IAST RequestId] [callId=" + callId + "] header already present on "
+                                + responseClass + ", skip (requestId=" + requestId + ", depth=" + depth + ")");
+                    }
+                    return;
+                }
+            } catch (NoSuchMethodException ignore) {
+                // 没 containsHeader 就直接进 setHeader 路径；不是致命
+            }
+
+            // 2) setHeader：幂等替换
+            try {
+                Method setHeader = cls.getMethod("setHeader", String.class, String.class);
+                setHeader.invoke(response, HEADER_NAME, requestId);
+                if (logWriter.isDebugEnabled()) {
+                    logWriter.debug("[IAST RequestId] [callId=" + callId + "] setHeader OK on "
+                            + responseClass + " (requestId=" + requestId + ", depth=" + depth + ")");
+                }
+                return;
+            } catch (NoSuchMethodException nsme) {
+                // 3) 极端兜底：setHeader 不存在就用 addHeader
+                Method addHeader = cls.getMethod("addHeader", String.class, String.class);
+                addHeader.invoke(response, HEADER_NAME, requestId);
+                if (logWriter.isDebugEnabled()) {
+                    logWriter.debug("[IAST RequestId] [callId=" + callId + "] addHeader fallback on "
+                            + responseClass + " (no setHeader; requestId=" + requestId + ", depth=" + depth + ")");
+                }
+            }
+        } catch (NoSuchMethodException nsme) {
+            logWriter.warn("[IAST RequestId] [callId=" + callId + "] response has neither setHeader nor addHeader on "
+                    + responseClass + "; header NOT set (requestId=" + requestId + ")");
+        } catch (Exception e) {
+            Throwable cause = (e.getCause() != null) ? e.getCause() : e;
+            logWriter.warn("[IAST RequestId] [callId=" + callId + "] setHeader threw on "
+                    + responseClass + ": " + cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                    + " (requestId=" + requestId + ", header NOT set)");
+        }
     }
 
     private void handleExit(MethodContext context) {

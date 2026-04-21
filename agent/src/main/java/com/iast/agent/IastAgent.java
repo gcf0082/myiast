@@ -29,10 +29,10 @@ public class IastAgent {
     // 保存 Instrumentation 以便 CLI 运行期调用 getAllLoadedClasses（buildAndInstall 之后就没其他地方用）
     public static volatile Instrumentation INSTRUMENTATION;
 
-    // 当前方法上下文（用于onExit时获取类名）
-    // 必须public：Advice字节码会被内联到被监控的类中（如HttpServlet），
-    // 这些类与IastAgent处于不同ClassLoader，访问private字段会触发IllegalAccessError
-    public static final ThreadLocal<com.iast.agent.plugin.MethodContext> currentContext = new ThreadLocal<>();
+    // 注：历史上这里有 ThreadLocal<MethodContext> currentContext 作为 onEnter→onExit 的上下文通道。
+    // 但嵌套 hook 场景（如 Servlet.service 内部再调到子类 service）会让内层 set 覆盖外层，
+    // 外层 onExit 就取不到自己的 context，RequestIdPlugin 的 exit 也就不跑，导致 depth 累加泄漏。
+    // 现在改由 @Advice.Enter 直接把 MethodContext 传给 onExit——每一层调用各自栈帧独立，不互踩。
 
     /**
      * Pre-agent模式入口：JVM启动时挂载
@@ -404,33 +404,35 @@ public class IastAgent {
     }
 
     /**
-     * 方法监控Advice
+     * 方法监控 Advice。
+     *
+     * <p>{@code onEnter} 直接把 {@link com.iast.agent.plugin.MethodContext} 当返回值交给
+     * {@code @Advice.Enter} —— Byte Buddy 把它编成被 hook 方法的局部变量，天然随栈帧独立。
+     * 嵌套调用（典型如 Servlet.service 调用子类 service）各层各自持有自己的 context，不会被
+     * 内层覆盖；修复了旧版单槽 ThreadLocal 下 {@code RequestIdHolder} depth 泄漏的问题。
      */
     public static class MethodMonitorAdvice {
         @Advice.OnMethodEnter
-        public static int onEnter(
+        public static com.iast.agent.plugin.MethodContext onEnter(
                 @Advice.Origin("#t.#m#s") String fullMethodName,
                 @Advice.This(optional = true, typing = Assigner.Typing.DYNAMIC) Object self,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
-            // 全局开关关闭时，直接跳过所有拦截逻辑
+            // 全局开关关闭时返回 null，onExit 识别 null 直接跳过
             if (!MONITOR_ENABLED) {
-                return 0;
+                return null;
             }
-            int callId = globalCallCount.incrementAndGet();
-            
-            // 构建方法上下文
             com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
-            context.setCallId(callId);
+            context.setCallId(globalCallCount.incrementAndGet());
             context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.ENTER);
             context.setTarget(self);
             context.setArgs(args);
             context.setEnterTime(System.currentTimeMillis());
             context.setThreadId(Thread.currentThread().getId());
             context.setThreadName(Thread.currentThread().getName());
-            
+
             // 解析类名和方法名
-            // fullMethodName格式：com.example.MyClass.method(arg.Type1,arg.Type2)RetType
-            // 参数类型中可能含"."，因此需要在"("之前查找最后一个"."
+            // fullMethodName 格式：com.example.MyClass.method(arg.Type1,arg.Type2)RetType
+            // 参数类型中可能含 "."，因此要在 "(" 之前查找最后一个 "."
             int parenIndex = fullMethodName.indexOf('(');
             int searchEnd = (parenIndex > 0) ? parenIndex : fullMethodName.length();
             int lastDotIndex = fullMethodName.lastIndexOf('.', searchEnd - 1);
@@ -442,39 +444,27 @@ public class IastAgent {
                 context.setMethodName("unknown");
             }
 
-            // 获取调用栈
             context.setStackTrace(Thread.currentThread().getStackTrace());
 
-            // 保存当前上下文到ThreadLocal（供onExit使用）
-            currentContext.set(context);
-            
             // 调用插件处理（支持同一方法挂多个插件）
             String internalClassName = context.getClassName().replace('.', '/');
             MonitorConfig.dispatchToPlugins(internalClassName, context);
 
-            return callId;
+            return context;
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class)
-        public static void onExit(@Advice.Enter int callId,
+        public static void onExit(@Advice.Enter com.iast.agent.plugin.MethodContext context,
                                   @Advice.Return(readOnly = true, typing = Assigner.Typing.DYNAMIC) Object result,
                                   @Advice.Thrown Throwable throwable) {
-            // callId为0说明开关关闭，直接跳过
-            if (callId == 0) {
-                return;
-            }
-            
-            // 从ThreadLocal获取上下文
-            com.iast.agent.plugin.MethodContext context = currentContext.get();
-            currentContext.remove();
-            
+            // context 为 null 说明 onEnter 被 MONITOR_ENABLED=false 短路了，直接跳过
             if (context == null) {
                 return;
             }
-            
+
             context.setExitTime(System.currentTimeMillis());
             context.setDuration(context.getExitTime() - context.getEnterTime());
-            
+
             if (throwable != null) {
                 context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXCEPTION);
                 context.setThrowable(throwable);
@@ -482,8 +472,7 @@ public class IastAgent {
                 context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
                 context.setResult(result);
             }
-            
-            // 调用插件处理（与onEnter保持一致，支持多插件分发）
+
             String internalClassName = context.getClassName() != null
                     ? context.getClassName().replace('.', '/')
                     : "";
@@ -492,33 +481,27 @@ public class IastAgent {
     }
 
     /**
-     * 构造函数监控Advice
-     * 与MethodMonitorAdvice的区别：onEnter不能访问this（对象尚未构造），onExit无返回值
+     * 构造函数监控 Advice。
+     * 与 {@link MethodMonitorAdvice} 的区别：onEnter 不能访问 this（对象尚未构造），onExit 无返回值。
+     * 同样通过 {@code @Advice.Enter} 把 context 传给 onExit（参见 MethodMonitorAdvice 的说明）。
      */
     public static class ConstructorMonitorAdvice {
         @Advice.OnMethodEnter
-        public static int onEnter(
+        public static com.iast.agent.plugin.MethodContext onEnter(
                 @Advice.Origin("#t.<init>#s") String fullMethodName,
                 @Advice.AllArguments(typing = Assigner.Typing.DYNAMIC) Object[] args) {
-            // 全局开关关闭时，直接跳过所有拦截逻辑
             if (!MONITOR_ENABLED) {
-                return 0;
+                return null;
             }
-            int callId = globalCallCount.incrementAndGet();
-            
-            // 构建方法上下文
             com.iast.agent.plugin.MethodContext context = new com.iast.agent.plugin.MethodContext();
-            context.setCallId(callId);
+            context.setCallId(globalCallCount.incrementAndGet());
             context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.ENTER);
-            context.setTarget(null);  // 构造函数中this不可用
+            context.setTarget(null);  // 构造函数中 this 不可用
             context.setArgs(args);
             context.setEnterTime(System.currentTimeMillis());
             context.setThreadId(Thread.currentThread().getId());
             context.setThreadName(Thread.currentThread().getName());
-            
-            // 解析类名和方法名
-            // fullMethodName格式：com.example.MyClass.<init>(arg.Type1,arg.Type2)V
-            // 参数类型中可能含"."，因此需要在"("之前查找最后一个"."
+
             int parenIndex = fullMethodName.indexOf('(');
             int searchEnd = (parenIndex > 0) ? parenIndex : fullMethodName.length();
             int lastDotIndex = fullMethodName.lastIndexOf('.', searchEnd - 1);
@@ -529,33 +512,19 @@ public class IastAgent {
                 context.setClassName(fullMethodName);
                 context.setMethodName("unknown");
             }
-            
-            // 获取调用栈
+
             context.setStackTrace(Thread.currentThread().getStackTrace());
 
-            // 保存当前上下文到ThreadLocal（供onExit获取className等信息）
-            currentContext.set(context);
-
-            // 调用插件处理（构造函数也支持多插件分发）
             String internalClassName = context.getClassName().replace('.', '/');
             MonitorConfig.dispatchToPlugins(internalClassName, context);
 
-            return callId;
+            return context;
         }
 
         @Advice.OnMethodExit
         public static void onExit(
-                @Advice.Enter int callId,
+                @Advice.Enter com.iast.agent.plugin.MethodContext context,
                 @Advice.This(typing = Assigner.Typing.DYNAMIC) Object self) {
-            // callId为0说明开关关闭，直接跳过
-            if (callId == 0) {
-                return;
-            }
-
-            // 从ThreadLocal取回onEnter保存的上下文，复用className等信息
-            com.iast.agent.plugin.MethodContext context = currentContext.get();
-            currentContext.remove();
-
             if (context == null) {
                 return;
             }
@@ -563,9 +532,8 @@ public class IastAgent {
             context.setExitTime(System.currentTimeMillis());
             context.setDuration(context.getExitTime() - context.getEnterTime());
             context.setPhase(com.iast.agent.plugin.MethodContext.CallPhase.EXIT);
-            context.setTarget(self);  // 构造函数完成后可以访问this
+            context.setTarget(self);  // 构造函数完成后可以访问 this
 
-            // 调用插件处理（与onEnter保持一致，支持多插件分发）
             String internalClassName = context.getClassName() != null
                     ? context.getClassName().replace('.', '/')
                     : "";
