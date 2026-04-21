@@ -282,7 +282,11 @@ agent 侧代码（`com.iast.agent.cli.{CliServer, CliHandler, WsFrame}`）依旧
 | `rules <class>` | 打印单个类的 matchType、关联插件、方法签名列表（`<class>` 可 FQ 也可 internal，两者等价） |
 | `classes <substring>` | 在 `Instrumentation.getAllLoadedClasses()` 里按**子串**（大小写不敏感）搜 |
 | `classes re:<regex>` | 正则搜（`Pattern.compile` + `matcher.find()`），要精确锚自己加 `^`/`$` |
+| `methods <class>` | 打印类声明的方法（含 ctor）+ 对应 JVM 描述符，YAML 可直接粘贴 |
+| `methods <class> <filter>` | 方法名子串过滤（大小写不敏感） |
+| `methods <class> all` | 额外沿 superclass 链展开（到 Object 前停），注释里标 `[inherited from X]` |
 | `enable` / `disable` | 运行时翻 `MONITOR_ENABLED`；效果等价 `iast-start.sh` / `iast-stop.sh` 但不经过 jattach |
+| `loglevel [<level>]` | 查询或切换日志级别（debug/info/warn/error） |
 | `quit` / `exit` | 关闭会话 |
 
 **classes 命令的输出约定**：命中 ≤500 打全 + `total: N`；>500 打前 500 + `... (N more truncated; total M)`；命中 0 → `no loaded class matches: <pattern>`。
@@ -294,7 +298,16 @@ iast> classes DispatcherServlet          # 子串
 iast> classes re:^org\.springframework\..*Controller$   # 正则
 iast> rules jakarta.servlet.http.HttpServlet            # FQ
 iast> rules java/io/File                                # internal 也行
+iast> methods com.iast.demo.FileCheckController         # 列全部声明方法 + 描述符
+iast> methods java.io.File exists                       # 过滤方法名
+iast> methods org.springframework.web.servlet.DispatcherServlet all service  # 展开继承链
 ```
+
+**methods 命令**输出的每一行是 YAML 可直接粘贴的形态：
+```
+  - "exists#()Z"                           # public boolean exists()
+```
+把 `"exists#()Z"` 这一段直接粘到 `iast-monitor.yaml` 里规则的 `methods:` 下即可，`#` 后的注释是人读 Java 签名帮你 double-check。加 `all` 展开继承时 `[inherited from X]` 标签会告诉你方法实际来自哪层父类。
 
 ### 安全与边界
 

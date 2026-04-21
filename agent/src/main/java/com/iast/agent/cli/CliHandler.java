@@ -5,8 +5,16 @@ import com.iast.agent.MonitorConfig;
 import com.iast.agent.plugin.PluginManager;
 
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -42,6 +50,7 @@ final class CliHandler {
                 case "plugins": return plugins();
                 case "rules":   return rules(arg);
                 case "classes": return classes(arg);
+                case "methods": return methods(arg);
                 case "enable":  return toggleMonitor(true);
                 case "disable": return toggleMonitor(false);
                 case "loglevel": return loglevel(arg);
@@ -62,6 +71,7 @@ final class CliHandler {
                 "  plugins              list registered plugins",
                 "  rules [class]        list all monitored classes, or detail for one",
                 "  classes <pattern>    grep loaded classes. use 're:<regex>' for regex",
+                "  methods <class> [name] [all]  print JVM descriptors of a class's methods (YAML-ready)",
                 "  enable               turn monitor ON (MONITOR_ENABLED=true)",
                 "  disable              turn monitor OFF (MONITOR_ENABLED=false)",
                 "  loglevel [<level>]   show or set log level (debug/info/warn/error)",
@@ -205,6 +215,282 @@ final class CliHandler {
             sb.append("\ntotal: ").append(total);
         }
         return sb.toString();
+    }
+
+    /**
+     * 列出一个类声明的方法（含构造函数）及 JVM 描述符。输出对 YAML 可直接粘贴：
+     * <pre>
+     *   - "exists#()Z"                           # public boolean exists()
+     * </pre>
+     * 默认只列 declared；加尾缀 {@code all} 走 superclass 链（到 Object 前停），按
+     * name+descriptor dedup；另可选一个 name 子串过滤。排查"YAML 该填啥 descriptor"的场景。
+     */
+    private static String methods(String arg) {
+        if (arg.isEmpty()) {
+            return "usage: methods <class> [name-filter] [all]";
+        }
+        java.lang.instrument.Instrumentation inst = IastAgent.INSTRUMENTATION;
+        if (inst == null) {
+            return "ERROR: Instrumentation not available (agent not initialized?)";
+        }
+
+        // 解析位置参数。只认字面 'all' 作为展开继承开关；其他 token 当 nameFilter
+        String[] tokens = arg.split("\\s+");
+        String className = tokens[0].replace('/', '.');
+        String nameFilter = null;
+        boolean includeInherited = false;
+        for (int i = 1; i < tokens.length; i++) {
+            String t = tokens[i];
+            if ("all".equalsIgnoreCase(t)) {
+                includeInherited = true;
+            } else if (nameFilter == null) {
+                nameFilter = t.toLowerCase();
+            }
+        }
+
+        // 从已加载类里找同名的（可能跨多个 CL）
+        List<Class<?>> targets = new ArrayList<>(1);
+        for (Class<?> c : inst.getAllLoadedClasses()) {
+            if (className.equals(c.getName())) {
+                targets.add(c);
+            }
+        }
+        if (targets.isEmpty()) {
+            return "no loaded class matches: " + tokens[0];
+        }
+
+        StringBuilder out = new StringBuilder();
+        for (int idx = 0; idx < targets.size(); idx++) {
+            if (idx > 0) out.append("\n");
+            appendClassMethods(out, targets.get(idx), nameFilter, includeInherited);
+        }
+        return out.toString();
+    }
+
+    /** 收集一个 Class 的方法 / ctor，排序、过滤、渲染到 sb 上。 */
+    private static void appendClassMethods(StringBuilder sb, Class<?> cls, String nameFilter, boolean includeInherited) {
+        sb.append("class: ").append(cls.getName())
+          .append("  (loader=").append(describeLoader(cls.getClassLoader())).append(")").append('\n');
+
+        // 收集成 (entry.key = name+descriptor) → entry；保序方便后续排序
+        LinkedHashMap<String, MethodEntry> entries = new LinkedHashMap<>();
+        Set<String> seen = new HashSet<>();
+
+        collectDeclared(cls, entries, seen, null);
+        int declaredCount = entries.size();
+        int inheritedCount = 0;
+        if (includeInherited) {
+            Class<?> p = cls.getSuperclass();
+            while (p != null && p != Object.class) {
+                int before = entries.size();
+                collectDeclared(p, entries, seen, p.getSimpleName());
+                inheritedCount += entries.size() - before;
+                p = p.getSuperclass();
+            }
+        }
+
+        // 过滤 + 排序：构造器优先，然后 name 升序，同名按 descriptor
+        List<MethodEntry> list = new ArrayList<>(entries.values());
+        if (nameFilter != null) {
+            String f = nameFilter;
+            list.removeIf(e -> !e.name.toLowerCase().contains(f));
+        }
+        list.sort(Comparator.<MethodEntry, Integer>comparing(e -> "<init>".equals(e.name) ? 0 : 1)
+                .thenComparing(e -> e.name)
+                .thenComparing(e -> e.descriptor));
+
+        if (list.isEmpty()) {
+            if (nameFilter != null) {
+                sb.append("no methods matching '").append(nameFilter).append("' in ").append(cls.getName());
+            } else {
+                sb.append("no methods declared in ").append(cls.getName());
+            }
+            return;
+        }
+
+        // 按本块最大 `"name#desc"` 宽度对齐 `#` 注释
+        int col = 0;
+        int printable = Math.min(list.size(), MAX_RESPONSE_LINES);
+        for (int i = 0; i < printable; i++) {
+            int w = list.get(i).yamlLine().length();
+            if (w > col) col = w;
+        }
+        col += 2;
+
+        for (int i = 0; i < printable; i++) {
+            MethodEntry e = list.get(i);
+            String yaml = e.yamlLine();
+            sb.append("  - ").append(yaml);
+            for (int j = yaml.length(); j < col; j++) sb.append(' ');
+            sb.append("# ").append(e.javaSig);
+            if (e.inheritedFrom != null) {
+                sb.append("   [inherited from ").append(e.inheritedFrom).append("]");
+            }
+            sb.append('\n');
+        }
+
+        if (list.size() > printable) {
+            sb.append("... (").append(list.size() - printable).append(" more truncated; total ").append(list.size()).append(")");
+            return;
+        }
+
+        // 尾行：统计 + 提示
+        sb.append("total: ").append(list.size());
+        if (nameFilter != null) {
+            sb.append(" methods matching '").append(nameFilter).append("'");
+            if (includeInherited && inheritedCount > 0) sb.append(" (").append(inheritedCount).append(" inherited)");
+        } else if (includeInherited) {
+            sb.append(" methods (").append(declaredCount).append(" declared, ").append(inheritedCount).append(" inherited)");
+        } else {
+            sb.append(" declared methods  (use 'methods <class> all' to include inherited)");
+        }
+    }
+
+    /** 把 cls 上直接声明的 method + ctor 塞进 entries；inheritedFrom 非 null 表示这一轮是父类递归。 */
+    private static void collectDeclared(Class<?> cls,
+                                        LinkedHashMap<String, MethodEntry> entries,
+                                        Set<String> seen,
+                                        String inheritedFrom) {
+        // 构造器（父类递归时跳过——子类实例化不会调父类的 <init>，列出来会误导）
+        if (inheritedFrom == null) {
+            try {
+                for (Constructor<?> c : cls.getDeclaredConstructors()) {
+                    if (c.isSynthetic()) continue;
+                    String desc = methodDescriptor(void.class, c.getParameterTypes());
+                    String key = "<init>#" + desc;
+                    if (seen.add(key)) {
+                        entries.put(key, new MethodEntry(
+                                "<init>", desc,
+                                formatJavaCtor(c),
+                                null));
+                    }
+                }
+            } catch (Throwable ignore) {}
+        }
+
+        try {
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.isSynthetic()) continue;
+                String desc;
+                try {
+                    desc = methodDescriptor(m.getReturnType(), m.getParameterTypes());
+                } catch (TypeNotPresentException tnpe) {
+                    com.iast.agent.LogWriter.getInstance().warn(
+                            "[IAST CLI] methods: skip " + cls.getName() + "." + m.getName()
+                                    + " (TypeNotPresent: " + tnpe.typeName() + ")");
+                    continue;
+                }
+                String key = m.getName() + "#" + desc;
+                if (seen.add(key)) {
+                    entries.put(key, new MethodEntry(
+                            m.getName(), desc,
+                            formatJavaMethod(m),
+                            inheritedFrom));
+                }
+            }
+        } catch (Throwable t) {
+            com.iast.agent.LogWriter.getInstance().warn(
+                    "[IAST CLI] methods: reflect failed on " + cls.getName() + ": "
+                            + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+    }
+
+    /** `(params)ret` JVM descriptor。 */
+    private static String methodDescriptor(Class<?> ret, Class<?>[] params) {
+        StringBuilder sb = new StringBuilder(32);
+        sb.append('(');
+        for (Class<?> p : params) sb.append(typeDescriptor(p));
+        sb.append(')').append(typeDescriptor(ret));
+        return sb.toString();
+    }
+
+    /** JVM 单类型描述符。primitive→字母；array→`[L...;`（Class.getName 已是该形式，只换分隔符）；其他→`Lfq/name;`。 */
+    private static String typeDescriptor(Class<?> t) {
+        if (t.isPrimitive()) {
+            if (t == void.class)    return "V";
+            if (t == boolean.class) return "Z";
+            if (t == byte.class)    return "B";
+            if (t == char.class)    return "C";
+            if (t == short.class)   return "S";
+            if (t == int.class)     return "I";
+            if (t == long.class)    return "J";
+            if (t == float.class)   return "F";
+            if (t == double.class)  return "D";
+        }
+        if (t.isArray()) {
+            // getName() 已是 "[L...;" 或 "[I" 等形式，只需把引用元素里的 '.' 换成 '/'
+            return t.getName().replace('.', '/');
+        }
+        return "L" + t.getName().replace('.', '/') + ";";
+    }
+
+    private static String formatJavaMethod(Method m) {
+        StringBuilder sb = new StringBuilder();
+        String mods = Modifier.toString(m.getModifiers() & Modifier.methodModifiers());
+        if (!mods.isEmpty()) sb.append(mods).append(' ');
+        sb.append(shortTypeName(m.getReturnType())).append(' ');
+        sb.append(m.getName()).append('(');
+        Class<?>[] params = m.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(shortTypeName(params[i]));
+        }
+        sb.append(')');
+        Class<?>[] thrown = m.getExceptionTypes();
+        if (thrown.length > 0) {
+            sb.append(" throws ");
+            for (int i = 0; i < thrown.length; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(shortTypeName(thrown[i]));
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String formatJavaCtor(Constructor<?> c) {
+        StringBuilder sb = new StringBuilder();
+        String mods = Modifier.toString(c.getModifiers() & Modifier.constructorModifiers());
+        if (!mods.isEmpty()) sb.append(mods).append(' ');
+        sb.append(c.getDeclaringClass().getSimpleName()).append('(');
+        Class<?>[] params = c.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(shortTypeName(params[i]));
+        }
+        sb.append(')');
+        return sb.toString();
+    }
+
+    private static String shortTypeName(Class<?> t) {
+        if (t == null) return "?";
+        // getSimpleName 对 String[][] 自动返回 "String[][]"，对匿名类返回 ""；兜底 getName
+        String sn = t.getSimpleName();
+        return sn.isEmpty() ? t.getName() : sn;
+    }
+
+    private static String describeLoader(ClassLoader cl) {
+        if (cl == null) return "bootstrap";
+        return cl.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(cl));
+    }
+
+    /** 方法条目的渲染承载：name + descriptor + 人读 java 签名（+ 可选 inheritedFrom 标签）。 */
+    private static final class MethodEntry {
+        final String name;
+        final String descriptor;
+        final String javaSig;
+        final String inheritedFrom;
+
+        MethodEntry(String name, String descriptor, String javaSig, String inheritedFrom) {
+            this.name = name;
+            this.descriptor = descriptor;
+            this.javaSig = javaSig;
+            this.inheritedFrom = inheritedFrom;
+        }
+
+        /** YAML 一行的左半边：`"name#descriptor"`（带引号，可直接粘到 methods: 下）。 */
+        String yamlLine() {
+            return "\"" + name + "#" + descriptor + "\"";
+        }
     }
 
     private static String pad(String s, int width) {
