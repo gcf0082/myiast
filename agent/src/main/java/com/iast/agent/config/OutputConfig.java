@@ -9,6 +9,8 @@ public class OutputConfig {
     private boolean stacktrace = true;
     private int stacktraceDepth = 8;
     private String eventsPath;
+    /** 日志级别：debug / info / warn / error，默认 info。MonitorConfig 加载完后会传给 LogWriter。 */
+    private String logLevel;
 
     public boolean isArgs() {
         return args;
@@ -48,5 +50,13 @@ public class OutputConfig {
 
     public void setEventsPath(String eventsPath) {
         this.eventsPath = eventsPath;
+    }
+
+    public String getLogLevel() {
+        return logLevel;
+    }
+
+    public void setLogLevel(String logLevel) {
+        this.logLevel = logLevel;
     }
 }

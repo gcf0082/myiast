@@ -103,8 +103,11 @@ iast> enable
 iast> quit
 ```
 
-首次打开时 jattach 会让目标 JVM 在 `127.0.0.1` 起一个 WebSocket server（端口写
-`/tmp/iast-agent-<pid>.port`），只 bind loopback、不暴露外网卡。完整命令表和协议细节看
+**架构（v2）**：**CLI 监听、agent 主动 dial**——脚本先拿一个 loopback 空闲端口，
+jattach 把 `cli=127.0.0.1:<port>` 传给 agent，agent 起一个 daemon dialer 线程连回来，
+CLI 侧 `accept` 进入 REPL。反转方向是为了容器/防火墙 egress-only 的目标也能用。默认
+只绑 loopback；跨主机请手动 `iast-cli.jar listen 0.0.0.0 <port>` 并自己叠加鉴权层。
+完整命令表和协议细节看
 [`agent/README.md`](agent/README.md#交互式-cli-arthas-风格)。
 
 ### 5. 外部插件（第三方 jar 扩展）

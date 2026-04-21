@@ -105,6 +105,7 @@ output:
   return: true            # 打印返回值
   stacktrace: true        # 打印调用栈
   stacktraceDepth: 8
+  logLevel: info          # debug | info | warn | error，默认 info；CLI 也可运行时 `loglevel debug`
 
 monitor:
   default:
@@ -241,8 +242,8 @@ monitor:
 
 ```bash
 ../iast-cli/iast-cli-jattach.sh 12345
-→ 首次进入 CLI 或端口失效，jattach 让目标进程起 CLI server...
-→ 已连接 127.0.0.1:35971（Ctrl-D 或输入 quit 退出）
+→ jattach 让目标进程 dial 回 127.0.0.1:35971 ...
+→ CLI listening on 127.0.0.1:35971，等待 agent 接入（Ctrl-D 或 quit 退出）
 iast-cli connected. Type 'help' for commands.
 iast> status
 pid:            12345
@@ -254,14 +255,21 @@ javaVersion:    21.0.9
 iast> quit
 ```
 
-**工作原理**：第一次跑脚本时，通过 jattach 给 agent 发 `cli` 动词，agent 在目标 JVM
-里起一个 **WebSocket server**，bind 在 `127.0.0.1` + OS 分配端口，端口号写到
-`/tmp/iast-agent-<pid>.port`。客户端是独立的 `iast-cli.jar`（纯 JDK 8+，入口类
-`com.iast.cli.CliClient`），握手后进入 REPL。后续再跑脚本直接探活已有端口，
-不再走 jattach。
+**工作原理（v2：CLI 监听、agent 主动 dial）**：
 
-服务端代码（`com.iast.agent.cli.{CliServer, CliHandler, WsFrame}`）依旧在
-`iast-agent.jar` 里——和 agent 内部状态耦合，不能拆出去。
+1. 脚本先跑 `iast-cli.jar freeport` 拿一个 loopback 空闲端口 `P`。
+2. jattach 给 agent 发 `cli=127.0.0.1:P` agentArg，agent 起一个 daemon 线程
+   `iast-cli-dialer`，用 `new Socket("127.0.0.1", P)` 连回本机 CLI。首次连不上会自动
+   重试 ~1.5s，覆盖 CLI exec 的冷启动窗口。
+3. 脚本 `exec iast-cli.jar listen 127.0.0.1 P`：CLI 绑 `ServerSocket` 到同一端口 `accept`，
+   握手后进入 REPL。
+4. 每次会话独立：quit / 断开 → agent 线程退出；想再开 REPL 再跑一次 `iast-cli-jattach.sh`。
+
+反转方向的目的：目标 JVM 只允许出方向（容器 egress、企业 firewall）也能用 CLI。
+
+agent 侧代码（`com.iast.agent.cli.{CliServer, CliHandler, WsFrame}`）依旧在
+`iast-agent.jar` 里——和 agent 内部状态耦合，不能拆出去；类名保留 `CliServer` 但
+真实语义已是 "agent 侧 CLI bootstrap"，内部 spawn 的线程名为 `iast-cli-dialer`。
 
 ### 命令表
 
@@ -290,11 +298,11 @@ iast> rules java/io/File                                # internal 也行
 
 ### 安全与边界
 
-- **Loopback only**：server 只 bind `127.0.0.1`，外网卡 / 容器网段连不上（物理网卡 `nc -zv host port` 必拒）
-- **按需启动**：没发 `cli` 动词之前不开端口，零开销
-- **单活跃会话**：同时只允许一个客户端；新连接到来旧会话会被踢掉，避免多客户端串扰开关
-- **端口持久化**：`.port` 文件一直在，重复跑 cli 脚本直接复用；端口失效时脚本会自动清理重新 jattach
-- **无鉴权**：依赖"同主机同用户"的本地安全边界——不要在多租户容器里暴露，也别把端口通过 iptables/portainer 转出去
+- **默认 loopback**：脚本用 `127.0.0.1` 绑定 + agent 以 `127.0.0.1` 连回，同主机同 UID 边界。想跨主机需要手动 `iast-cli.jar listen 0.0.0.0 <port>` + `cli=<cli-host-ip>:<port>`；**没有内建鉴权**，跨主机暴露请自行叠加 SSH 隧道 / 防火墙 ACL / VPN
+- **按需启动**：没发 `cli=host:port` agentArg 之前 agent 不开任何网络资源，零开销
+- **单活跃会话**：同时只有一条 dialer 线程；已有会话时再发 `cli=...` 会被忽略并打日志
+- **会话结束即退出**：quit / 对端断开 → dialer 线程退出；再连一次就再跑一次 `iast-cli-jattach.sh`（或手动 jattach 新的 `cli=host:port`）
+- **agent 不再监听端口**：v1 的 `/tmp/iast-agent-<pid>.port` 文件已取消——agent 现在是 WS 客户端，由 CLI 决定监听地址
 
 ### v1 不做
 
@@ -342,6 +350,26 @@ monitor:
 tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.event_type == "file.list")'
 ```
 
+## 日志级别 & 调试
+
+四档：`debug` / `info`（默认）/ `warn` / `error`。每行日志按 `[LEVEL] [Subsystem] msg` 形式输出。
+
+切换方式：
+- **配置文件**：`output.logLevel: debug`（重启目标 JVM 才能生效）
+- **CLI 运行时切换**（推荐）：`iast-cli-jattach.sh <pid>` → `loglevel debug`，无需重启
+- **CLI 查看当前级别**：`status` 命令输出里有 `logLevel:` 行，或 `loglevel`（不带参数）单独打印
+
+debug 模式打开后，下面这些"静默问题"会冒出来：
+
+| 静默症状 | debug 下能看到什么 |
+|---------|-------------------|
+| 响应头 `X-Request-Id` 没出现 | `[WARN] [IAST RequestId] addHeader threw on <responseClass>: ...`（response 包装类不支持 addHeader 或方法抛异常）；或 `[DEBUG] [IAST RequestId] skip addHeader: nested call (depth=N)` 表示当前调用是嵌套层不该加头 |
+| 配了 yaml 规则但插件没动静 | `[DEBUG] [IAST Plugin] dispatch miss: plugin 'XXX' not registered (...)`，通常是插件名拼错 / 外部插件没扫到 |
+| 上游 `X-Request-Id` 头没被复用 | `[DEBUG] [IAST RequestId] req has no getHeader (class=...)`，说明 advice 拿到的 args[0] 不是 HttpServletRequest |
+| stop/start 切换后行为不对 | `[INFO] [IAST Agent] MONITOR_ENABLED true -> false (stop)` / `... -> true (start)` 标定切换时点；插件 enter/exit 是否成对完成可看 `[IAST RequestId] === Request Started ===` / `Request Completed` 配对 |
+
+debug 级别会显著增加日志量（每个被监控请求多 ~3 行）；线上场景建议只在排查期临时打开，结束 `loglevel info`。
+
 ## 故障排查
 
 | 现象 | 原因 / 排查 |
@@ -352,7 +380,7 @@ tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.event_type == "file.list")'
 | premain 启动后长时间没拦截 | 正常：默认 `premainDelayMs=60000` 会让字节码 install 延迟 1 分钟。日志里找 `Bytecode install deferred by ...`；立即生效把它设 `0` |
 | `matchType: interface` 配了但没命中 | (1) premain 模式下应用还没起来就挂 Agent，把 `includeFutureClasses: true` 打开或调大 `premainDelayMs` 让快照更完整；(2) 方法是从抽象父类继承来、子类没 override —— 这时 hook 会发生在父类而非子类，属于正常 |
 | JRE 环境 attach 失败 | `-DiastAttach=fallback` 强走 byte-buddy-agent；或安装 jattach |
-| `iast-cli-jattach.sh` 提示 `CLI server 未在 3s 内就绪` | 看 `/tmp/iast-agent-<pid>.log` 尾行：(1) 端口被别的进程占（很少见）；(2) agent 还没到"已初始化"——先跑一次 `iast-start-jattach.sh` 挂上再开 cli |
+| `iast-cli-jattach.sh` 卡在 `waiting for agent` | 看 `/tmp/iast-agent-<pid>.log` 尾行是否 `[IAST CLI] dialer gave up after N attempts`：(1) agent 还没到"已初始化"——先跑一次 `iast-start-jattach.sh` 挂上再开 cli；(2) 容器/网络策略不允许目标 JVM 出方向连 `127.0.0.1` 上本机 CLI 的端口（非常少见，user-namespace / 奇葩 bridge 可能触发） |
 | CLI 连上但 `rules` / `status` 空 | agent 还没执行 `buildAndInstall`（比如 premain 延迟期），等一下再试；或 `disable` → `enable` 看回显确认连接正常 |
 | Windows JRE | 需要 byte-buddy-agent 路径（自动），或装 jattach Windows 版 |
 

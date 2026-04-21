@@ -46,16 +46,27 @@ public class PluginManager {
      */
     public void handleMethodCall(String pluginName, MethodContext context) {
         IastPlugin plugin = plugins.get(pluginName);
-        if (plugin != null) {
-            try {
-                plugin.handleMethodCall(context);
-            } catch (Exception e) {
-                // 插件异常不影响原始进程，只记录日志
-                LogWriter.getInstance().info("[IAST Plugin] Plugin " + pluginName + " error: " + e.getMessage());
-            } catch (Throwable t) {
-                // 捕获所有异常，包括Error
-                LogWriter.getInstance().info("[IAST Plugin] Plugin " + pluginName + " error: " + t.getMessage());
+        if (plugin == null) {
+            // 静默 miss 是排查"接了 yaml 规则却没动静"的常见死角——只在 debug 下打，
+            // 避免高 QPS 路径上 INFO 刷屏
+            LogWriter lw = LogWriter.getInstance();
+            if (lw.isDebugEnabled()) {
+                lw.debug("[IAST Plugin] dispatch miss: plugin '" + pluginName + "' not registered (class="
+                        + (context.getClassName() == null ? "?" : context.getClassName())
+                        + ", method=" + (context.getMethodName() == null ? "?" : context.getMethodName()) + ")");
             }
+            return;
+        }
+        try {
+            plugin.handleMethodCall(context);
+        } catch (Exception e) {
+            // 插件异常不影响原始进程，只记录日志
+            LogWriter.getInstance().warn("[IAST Plugin] Plugin " + pluginName + " threw: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+        } catch (Throwable t) {
+            // 捕获所有异常，包括 Error
+            LogWriter.getInstance().error("[IAST Plugin] Plugin " + pluginName + " errored: "
+                    + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
     }
     

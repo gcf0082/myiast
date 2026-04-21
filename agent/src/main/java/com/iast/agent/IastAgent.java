@@ -63,13 +63,17 @@ public class IastAgent {
         if (INITIALIZED) {
             LogWriter.getInstance().info("[IAST Agent] Already initialized, processing control command: " + agentArgs);
             if ("stop".equals(agentArgs)) {
+                boolean prev = MONITOR_ENABLED;
                 MONITOR_ENABLED = false;
-                LogWriter.getInstance().info("[IAST Agent] Monitor disabled successfully, target process restored to normal");
+                LogWriter.getInstance().info("[IAST Agent] MONITOR_ENABLED " + prev + " -> false (stop). "
+                        + "Bytecode advice stays installed; advice early-returns when disabled.");
             } else if ("start".equals(agentArgs)) {
+                boolean prev = MONITOR_ENABLED;
                 MONITOR_ENABLED = true;
-                LogWriter.getInstance().info("[IAST Agent] Monitor enabled successfully");
-            } else if ("cli".equals(agentArgs)) {
-                com.iast.agent.cli.CliServer.ensureStarted();
+                LogWriter.getInstance().info("[IAST Agent] MONITOR_ENABLED " + prev + " -> true (start). "
+                        + "Subsequent intercepted calls will dispatch to plugins again.");
+            } else {
+                handleCliArg(agentArgs);
             }
             return;
         }
@@ -144,10 +148,36 @@ public class IastAgent {
         // 这里先于实际 install 标记是安全的——advice 的 MONITOR_ENABLED 检查独立于 INITIALIZED。
         INITIALIZED = true;
 
-        // 首次 attach 时若直接带 "cli"，一并把 CLI server 起来（"一步到位"场景）
+        // 首次 attach 时若直接带 "cli=host:port"，一并把 CLI dialer 拉起来（"一步到位"场景）
+        handleCliArg(agentArgs);
+    }
+
+    /**
+     * 解析并处理 {@code cli=host:port} 形式的 agentArg，触发 CLI dialer 连接。
+     * 非 cli 参数（如 config=...、start/stop）直接忽略。bare {@code "cli"} 提示新语法。
+     */
+    private static void handleCliArg(String agentArgs) {
+        if (agentArgs == null) return;
         if ("cli".equals(agentArgs)) {
-            com.iast.agent.cli.CliServer.ensureStarted();
+            LogWriter.getInstance().info("[IAST Agent] 'cli' alone is no longer supported; use cli=host:port (CLI listens, agent dials)");
+            return;
         }
+        if (!agentArgs.startsWith("cli=")) return;
+        String target = agentArgs.substring("cli=".length()).trim();
+        int colon = target.lastIndexOf(':');  // lastIndexOf 兼容 IPv6 host 字面量
+        if (colon <= 0 || colon == target.length() - 1) {
+            LogWriter.getInstance().info("[IAST Agent] cli agentArg must be cli=host:port, got: " + agentArgs);
+            return;
+        }
+        String host = target.substring(0, colon);
+        int port;
+        try {
+            port = Integer.parseInt(target.substring(colon + 1));
+        } catch (NumberFormatException nfe) {
+            LogWriter.getInstance().info("[IAST Agent] cli port not a number: " + agentArgs);
+            return;
+        }
+        com.iast.agent.cli.CliServer.ensureConnected(host, port);
     }
 
     /**

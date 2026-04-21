@@ -42,8 +42,9 @@ final class CliHandler {
                 case "plugins": return plugins();
                 case "rules":   return rules(arg);
                 case "classes": return classes(arg);
-                case "enable":  IastAgent.MONITOR_ENABLED = true;  return "OK: monitor enabled";
-                case "disable": IastAgent.MONITOR_ENABLED = false; return "OK: monitor disabled";
+                case "enable":  return toggleMonitor(true);
+                case "disable": return toggleMonitor(false);
+                case "loglevel": return loglevel(arg);
                 case "quit":
                 case "exit":    return "__QUIT__";
                 default:        return "unknown command: " + verb + " (try 'help')";
@@ -63,7 +64,38 @@ final class CliHandler {
                 "  classes <pattern>    grep loaded classes. use 're:<regex>' for regex",
                 "  enable               turn monitor ON (MONITOR_ENABLED=true)",
                 "  disable              turn monitor OFF (MONITOR_ENABLED=false)",
+                "  loglevel [<level>]   show or set log level (debug/info/warn/error)",
                 "  quit / exit          close this session");
+    }
+
+    /**
+     * 翻 MONITOR_ENABLED 并打日志，回显里也带前后状态——比单条 "OK: monitor enabled" 更便于
+     * 用户/脚本判断"是不是真切换了"（已经是该状态时显示 already 而非误以为切换成功）。
+     */
+    private static String toggleMonitor(boolean target) {
+        boolean prev = IastAgent.MONITOR_ENABLED;
+        IastAgent.MONITOR_ENABLED = target;
+        com.iast.agent.LogWriter.getInstance().info("[IAST CLI] MONITOR_ENABLED " + prev + " -> " + target + " (via cli)");
+        if (prev == target) {
+            return "OK: monitor already " + (target ? "enabled" : "disabled") + " (no change)";
+        }
+        return "OK: monitor " + (target ? "enabled" : "disabled") + " (was " + prev + ")";
+    }
+
+    private static String loglevel(String arg) {
+        com.iast.agent.LogWriter lw = com.iast.agent.LogWriter.getInstance();
+        if (arg.isEmpty()) {
+            return "current loglevel: " + com.iast.agent.LogWriter.getCurrentLevelName().toLowerCase()
+                    + "  (use: loglevel <debug|info|warn|error>)";
+        }
+        String prev = com.iast.agent.LogWriter.getCurrentLevelName();
+        lw.setLevel(arg);
+        String now = com.iast.agent.LogWriter.getCurrentLevelName();
+        if (prev.equals(now)) {
+            // setLevel 对未知名静默 warn 但不变；告诉用户没换
+            return "no change: still " + now.toLowerCase() + " (unknown level '" + arg + "'?)";
+        }
+        return "OK: loglevel " + prev.toLowerCase() + " -> " + now.toLowerCase();
     }
 
     private static String status() {
@@ -77,6 +109,7 @@ final class CliHandler {
         sb.append("callCount:      ").append(IastAgent.globalCallCount.get()).append('\n');
         sb.append("configPath:     ").append(MonitorConfig.getConfigFilePath()).append('\n');
         sb.append("uptimeSec:      ").append(upSec).append('\n');
+        sb.append("logLevel:       ").append(com.iast.agent.LogWriter.getCurrentLevelName().toLowerCase()).append('\n');
         sb.append("javaVersion:    ").append(System.getProperty("java.version"));
         return sb.toString();
     }

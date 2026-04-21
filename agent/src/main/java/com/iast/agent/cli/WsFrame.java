@@ -122,6 +122,11 @@ final class WsFrame {
         writeFrame(out, OP_PONG, pingPayload, false);
     }
 
+    /** 客户端写 pong 响应 ping（原样回 payload，mask）。CLI-listens 模式下 agent 侧是 WS client，用这个。 */
+    static void writeClientPong(OutputStream out, byte[] pingPayload) throws IOException {
+        writeFrame(out, OP_PONG, pingPayload, true);
+    }
+
     private static void writeFrame(OutputStream out, int opcode, byte[] payload, boolean mask) throws IOException {
         int len = payload.length;
         out.write(0x80 | (opcode & 0x0F));          // FIN=1 + opcode

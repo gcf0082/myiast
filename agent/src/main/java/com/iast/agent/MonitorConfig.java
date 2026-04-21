@@ -138,6 +138,11 @@ public class MonitorConfig {
             if (outputConfig.getEventsPath() != null && !outputConfig.getEventsPath().isEmpty()) {
                 com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(outputConfig.getEventsPath());
             }
+            // 日志级别从 yaml 应用——本调用要早于"Loaded monitor rule"等后续 info 日志，
+            // 这样若用户配 logLevel: debug，整个 init 阶段的 debug 日志也能被记录。
+            if (outputConfig.getLogLevel() != null && !outputConfig.getLogLevel().isEmpty()) {
+                LogWriter.getInstance().setLevel(outputConfig.getLogLevel());
+            }
         }
 
         // 解析全局 default 配置
@@ -247,6 +252,12 @@ public class MonitorConfig {
         outputReturn = getBooleanProperty(props, "output.return", true);
         outputStacktrace = getBooleanProperty(props, "output.stacktrace", true);
         stacktraceDepth = getIntProperty(props, "output.stacktrace.depth", 8);
+
+        // 与 yaml 对齐：output.logLevel = debug|info|warn|error
+        String level = props.getProperty("output.logLevel");
+        if (level != null && !level.trim().isEmpty()) {
+            LogWriter.getInstance().setLevel(level.trim());
+        }
 
         for (Map.Entry<Object, Object> entry : props.entrySet()) {
             String key = entry.getKey().toString().trim();

@@ -4,193 +4,202 @@ import com.iast.agent.LogWriter;
 
 import java.io.BufferedReader;
 import java.io.DataInputStream;
-import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.lang.management.ManagementFactory;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
- * Agent 内置的 WebSocket 控制平面 server。按需启动（agentmain("cli") 触发），绑定
- * 127.0.0.1 + OS 分配端口，写端口号到 /tmp/iast-agent-&lt;pid&gt;.port，供 CLI 客户端脚本读取。
+ * Agent 内置的 WebSocket 控制平面 <b>dialer</b>（注意：尽管叫 CliServer，实际是 WS 客户端）。
+ *
+ * <p>按需启动——{@code agentmain("cli=host:port")} 触发 {@link #ensureConnected(String, int)}
+ * 向 CLI 所在的 {@code host:port} 发起 WebSocket 连接，握手成功后进入命令循环：
+ * 读 CLI 发来的文本帧（server-sent，不 mask）→ 交 {@link CliHandler} 执行 → 结果写回
+ * （client-sent，必须 mask）。
+ *
+ * <p>历史：此类早期实现是 WebSocket server（目标 JVM 监听端口，CLI 进来连）。v2 翻转为
+ * CLI 监听、agent 出 dial，以支持只允许出口连接的容器/防火墙场景。类名保留 {@code CliServer}
+ * 是为了改动集中；真实语义是 "agent 一侧的 CLI 控制会话 bootstrap"。
  *
  * <h3>不变量</h3>
  * <ul>
- *   <li>同进程最多一个 accept 线程（{@link #ensureStarted()} 幂等）</li>
- *   <li>同时只处理一个客户端：新连接到来前旧连接未 close 的话，会强制关掉旧连接</li>
- *   <li>只 bind loopback，永不暴露外网卡</li>
- *   <li>handler 抛任何异常都不会打断 accept loop；单连接异常独立</li>
+ *   <li>同进程最多一个 dialer 线程（{@link #ensureConnected} 幂等）</li>
+ *   <li>1:1 会话；session 结束就退出线程，不自动重连——再连由 CLI 侧重新 jattach 触发</li>
+ *   <li>handler 抛任何异常都不会影响 agent 其它功能；dialer 异常只打日志</li>
  * </ul>
  */
 public final class CliServer {
 
     private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    private static final int SO_TIMEOUT_MS = 0;  // 0 = 无限等，让客户端控制空闲
-    private static final int MAX_LINE = 16 * 1024;
+    private static final int CONNECT_TIMEOUT_MS = 2_000;
+    private static final int SO_TIMEOUT_MS = 0;  // 0 = 无限等，让命令层控制空闲
+    // 冷启动窗口：jattach 先到、CLI 后 exec 的情况下要等 CLI 把 ServerSocket 绑上来。
+    // 5 次 × 300ms ≈ 1.5s，覆盖典型 JVM 启动时间；首次连成功就立刻返回。
+    private static final int CONNECT_RETRIES = 5;
+    private static final long CONNECT_RETRY_DELAY_MS = 300L;
 
-    private static volatile boolean started = false;
-    private static volatile ServerSocket serverSocket;
-    private static volatile Socket activeClient;
+    private static volatile boolean running = false;
+    private static volatile Socket activeSocket;
     private static final Object START_LOCK = new Object();
 
     private CliServer() {}
 
-    /** 幂等：首次调用起 server；已起过则打一条日志就返回。 */
-    public static void ensureStarted() {
-        if (started) {
-            LogWriter.getInstance().info("[IAST CLI] CLI server already running on port " + (serverSocket == null ? -1 : serverSocket.getLocalPort()));
+    /**
+     * 幂等：若当前已有活动会话，打一条日志就返回；否则 spawn 一个 daemon dialer 线程
+     * 连到 {@code host:port}。
+     */
+    public static void ensureConnected(String host, int port) {
+        if (running) {
+            LogWriter.getInstance().info("[IAST CLI] dialer already running; ignoring new cli=" + host + ":" + port);
             return;
         }
         synchronized (START_LOCK) {
-            if (started) return;
-            try {
-                ServerSocket ss = new ServerSocket();
-                ss.setReuseAddress(true);
-                ss.bind(new java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0));
-                serverSocket = ss;
-                int port = ss.getLocalPort();
-                writePortFile(port);
-                Thread t = new Thread(CliServer::acceptLoop, "iast-cli-server");
-                t.setDaemon(true);
-                t.start();
-                started = true;
-                LogWriter.getInstance().info("[IAST CLI] CLI server started on 127.0.0.1:" + port);
-            } catch (IOException e) {
-                LogWriter.getInstance().info("[IAST CLI] Failed to start CLI server: " + e.getMessage());
-            }
+            if (running) return;
+            running = true;
+            Thread t = new Thread(() -> runSession(host, port), "iast-cli-dialer");
+            t.setDaemon(true);
+            t.start();
         }
     }
 
-    private static void writePortFile(int port) {
-        String pid = ManagementFactory.getRuntimeMXBean().getName();
-        int at = pid.indexOf('@');
-        if (at > 0) pid = pid.substring(0, at);
-        File f = new File("/tmp/iast-agent-" + pid + ".port");
-        try (FileWriter w = new FileWriter(f)) {
-            w.write(String.valueOf(port));
-        } catch (IOException e) {
-            LogWriter.getInstance().info("[IAST CLI] Failed to write port file " + f + ": " + e.getMessage());
-        }
-    }
-
-    private static void acceptLoop() {
-        ServerSocket ss = serverSocket;
-        while (!ss.isClosed()) {
-            Socket client = null;
-            try {
-                client = ss.accept();
-                client.setSoTimeout(SO_TIMEOUT_MS);
-                closePrevious();
-                activeClient = client;
-                final Socket c = client;
-                Thread handler = new Thread(() -> handleClient(c), "iast-cli-conn");
-                handler.setDaemon(true);
-                handler.start();
-            } catch (IOException e) {
-                if (!ss.isClosed()) {
-                    LogWriter.getInstance().info("[IAST CLI] accept error: " + e.getMessage());
-                }
-                if (client != null) safeClose(client);
-            }
-        }
-    }
-
-    private static void closePrevious() {
-        Socket prev = activeClient;
-        if (prev != null && !prev.isClosed()) {
-            LogWriter.getInstance().info("[IAST CLI] New connection arrived; closing previous session");
-            safeClose(prev);
-        }
-    }
-
-    private static void handleClient(Socket sock) {
+    private static void runSession(String host, int port) {
+        Socket sock = null;
         try {
+            LogWriter.getInstance().info("[IAST CLI] Dialing CLI at " + host + ":" + port);
+            sock = dialWithRetry(host, port);
+            if (sock == null) return;
+            sock.setSoTimeout(SO_TIMEOUT_MS);
+            activeSocket = sock;
+
             DataInputStream in = new DataInputStream(sock.getInputStream());
             OutputStream out = sock.getOutputStream();
-            if (!doHandshake(in, out)) {
-                safeClose(sock);
+
+            if (!doClientHandshake(in, out, host, port)) {
+                LogWriter.getInstance().info("[IAST CLI] handshake failed");
                 return;
             }
-            // 欢迎横幅（放第一帧）
-            WsFrame.writeServerText(out, "iast-cli connected. Type 'help' for commands.");
-            while (!sock.isClosed()) {
-                WsFrame.Frame f = WsFrame.read(in, true);
-                if (f == null) break;
-                switch (f.opcode) {
-                    case WsFrame.OP_TEXT:
-                        String cmd = f.text();
-                        String resp = CliHandler.execute(cmd);
-                        if ("__QUIT__".equals(resp)) {
-                            WsFrame.writeServerText(out, "bye");
-                            WsFrame.writeClose(out, 1000, "bye", false);
-                            return;
-                        }
-                        WsFrame.writeServerText(out, resp);
-                        break;
-                    case WsFrame.OP_PING:
-                        WsFrame.writeServerPong(out, f.payload);
-                        break;
-                    case WsFrame.OP_CLOSE:
-                        WsFrame.writeClose(out, 1000, "bye", false);
-                        return;
-                    default:
-                        // 忽略 pong / continuation / binary
-                        break;
-                }
-            }
+            LogWriter.getInstance().info("[IAST CLI] CLI session established");
+
+            sessionLoop(sock, in, out);
         } catch (IOException e) {
-            LogWriter.getInstance().info("[IAST CLI] session I/O error: " + e.getMessage());
+            LogWriter.getInstance().info("[IAST CLI] dialer I/O error: " + e.getMessage());
         } catch (Throwable t) {
-            LogWriter.getInstance().info("[IAST CLI] session unexpected error: " + t);
+            LogWriter.getInstance().info("[IAST CLI] dialer unexpected error: " + t);
         } finally {
-            safeClose(sock);
-            if (activeClient == sock) activeClient = null;
+            if (sock != null) safeClose(sock);
+            activeSocket = null;
+            running = false;
+            LogWriter.getInstance().info("[IAST CLI] CLI session closed");
         }
     }
 
-    private static boolean doHandshake(DataInputStream in, OutputStream out) throws IOException {
-        // 读 HTTP 请求头直到空行
-        BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.ISO_8859_1));
-        String requestLine = reader.readLine();
-        if (requestLine == null) return false;
-        Map<String, String> headers = new HashMap<>();
+    /**
+     * 按 {@link #CONNECT_RETRIES} × {@link #CONNECT_RETRY_DELAY_MS} 做短暂重试：jattach 触发本方法时
+     * CLI 可能还没完成 {@code ServerSocket.bind}（典型 iast-cli-jattach.sh 流程里 jattach 在 exec CLI 前跑）。
+     * 返回 null 表示最终失败；日志在每次失败时打一行，方便排错。
+     */
+    private static Socket dialWithRetry(String host, int port) {
+        IOException last = null;
+        for (int attempt = 1; attempt <= CONNECT_RETRIES; attempt++) {
+            try {
+                Socket s = new Socket();
+                s.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                if (attempt > 1) {
+                    LogWriter.getInstance().info("[IAST CLI] connected on attempt " + attempt);
+                }
+                return s;
+            } catch (IOException e) {
+                last = e;
+                if (attempt < CONNECT_RETRIES) {
+                    try {
+                        Thread.sleep(CONNECT_RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                }
+            }
+        }
+        LogWriter.getInstance().info("[IAST CLI] dialer gave up after " + CONNECT_RETRIES
+                + " attempts: " + (last == null ? "?" : last.getMessage()));
+        return null;
+    }
+
+    private static void sessionLoop(Socket sock, DataInputStream in, OutputStream out) throws IOException {
+        while (!sock.isClosed()) {
+            // expectMasked=false：CLI 现在是 WS server，它发来的帧 *不得* mask
+            WsFrame.Frame f = WsFrame.read(in, false);
+            if (f == null) break;
+            switch (f.opcode) {
+                case WsFrame.OP_TEXT:
+                    String cmd = f.text();
+                    String resp = CliHandler.execute(cmd);
+                    if ("__QUIT__".equals(resp)) {
+                        WsFrame.writeClientText(out, "bye");
+                        WsFrame.writeClose(out, 1000, "bye", true);
+                        return;
+                    }
+                    WsFrame.writeClientText(out, resp);
+                    break;
+                case WsFrame.OP_PING:
+                    WsFrame.writeClientPong(out, f.payload);
+                    break;
+                case WsFrame.OP_CLOSE:
+                    WsFrame.writeClose(out, 1000, "bye", true);
+                    return;
+                default:
+                    // 忽略 pong / continuation / binary
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 客户端视角的 WS 握手：发 {@code GET / HTTP/1.1 ... Upgrade: websocket}，等 {@code 101}
+     * 并校验 {@code Sec-WebSocket-Accept}。
+     */
+    private static boolean doClientHandshake(DataInputStream in, OutputStream out,
+                                             String host, int port) throws IOException {
+        byte[] keyBytes = new byte[16];
+        new SecureRandom().nextBytes(keyBytes);
+        String key = Base64.getEncoder().encodeToString(keyBytes);
+        String req = "GET / HTTP/1.1\r\n" +
+                "Host: " + host + ":" + port + "\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Key: " + key + "\r\n" +
+                "Sec-WebSocket-Version: 13\r\n\r\n";
+        out.write(req.getBytes(StandardCharsets.ISO_8859_1));
+        out.flush();
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.ISO_8859_1));
+        String statusLine = br.readLine();
+        if (statusLine == null || !statusLine.contains(" 101 ")) {
+            LogWriter.getInstance().info("[IAST CLI] handshake rejected: " + statusLine);
+            return false;
+        }
+        String expected = base64Sha1(key + GUID);
         String line;
-        int total = 0;
-        while ((line = reader.readLine()) != null) {
-            total += line.length();
-            if (total > MAX_LINE) return false;
+        boolean ok = false;
+        while ((line = br.readLine()) != null) {
             if (line.isEmpty()) break;
             int colon = line.indexOf(':');
             if (colon > 0) {
-                headers.put(line.substring(0, colon).trim().toLowerCase(),
-                            line.substring(colon + 1).trim());
+                String k = line.substring(0, colon).trim();
+                String v = line.substring(colon + 1).trim();
+                if ("Sec-WebSocket-Accept".equalsIgnoreCase(k) && expected.equals(v)) {
+                    ok = true;
+                }
             }
         }
-        String key = headers.get("sec-websocket-key");
-        String upgrade = headers.get("upgrade");
-        if (key == null || upgrade == null || !"websocket".equalsIgnoreCase(upgrade)) {
-            String bad = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nExpect WebSocket upgrade\n";
-            out.write(bad.getBytes(StandardCharsets.ISO_8859_1));
-            out.flush();
-            return false;
+        if (!ok) {
+            LogWriter.getInstance().info("[IAST CLI] handshake failed: bad Sec-WebSocket-Accept");
         }
-        String accept = base64Sha1(key + GUID);
-        String resp = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
-        out.write(resp.getBytes(StandardCharsets.ISO_8859_1));
-        out.flush();
-        return true;
+        return ok;
     }
 
     private static String base64Sha1(String s) {

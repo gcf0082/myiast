@@ -9,6 +9,9 @@ output:
   stacktrace: true           # 是否打印调用栈
   stacktraceDepth: 8
   # eventsPath: /tmp/iast-events.jsonl   # 可选，默认 /tmp/iast-events-<pid>.jsonl
+  logLevel: info             # debug|info|warn|error，默认 info；
+                             # 排查"插件没动静 / 响应头丢失 / 监控开关切换异常"等问题时调成 debug，
+                             # 也可以通过 CLI `loglevel debug` 运行时切换
 
 monitor:
   default:

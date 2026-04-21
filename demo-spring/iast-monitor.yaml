@@ -8,6 +8,9 @@ output:
   return: true
   stacktrace: true
   stacktraceDepth: 8
+  # 想看 RequestIdPlugin 的 addHeader 决策路径 / 插件分发 miss 等细节，调成 debug；
+  # 也可以挂 CLI 之后 `loglevel debug` 运行时切换。
+  logLevel: info
 
 monitor:
   default:
