@@ -128,7 +128,7 @@ monitor:
 | CustomEventPlugin | 按 YAML 表达式提取参数 / 渲染模板 / 写 JSONL 结构化事件 | **是**（只在 exact 规则下稳定工作） |
 | RequestIdPlugin | 为每个请求生成 / 复用 `X-Request-Id`，挂到 ThreadLocal + 响应头；并采集 `client_ip` / `forward_req_id` / `forward_ip` / `xseeker` 到 IastContext 供出口侧透传用 | 否（任何分派进来都跑） |
 | ServletBodyPlugin | 改写 `service` 入参为缓冲 wrapper，记录请求 body | 否（仅对显式标 `wrapServletRequest: true` 的规则生效） |
-| HttpForwardPlugin | 出口链路头透传：在出口 HTTP 客户端方法的 enter 处，从 IastContext 读上下文，反射调一个 `(String,String)` setter 把 `x-seeker-forward-req-id` / `x-seeker-forward-ip` / `xseeker` 注入到下游请求；目标类不在 classpath 时静默不命中 | 否（按 yaml 规则触发，每条规则可指定 `requestArgIndex` / `headerSetterMethod`） |
+| HttpForwardPlugin | 出口链路头透传：钩到 `HttpRest.sendHttpRequest`，从 IastContext 读上下文，反射调 `args[2].putHttpContextHeader(String, String)` 把 `x-seeker-forward-req-id` / `x-seeker-forward-ip` / `xseeker` 注入到下游请求；目标类不在 classpath 时静默不命中 | 否（无 pluginConfig，行为对齐 HttpRest 固定签名；适配其他客户端时直接新写一个插件） |
 | LogPlugin | 人读日志（调用、参数、返回值、栈） | 否；注：默认配置样例里已不用它，改推荐 CustomEventPlugin 走 JSONL |
 
 **同一方法可挂多个插件**——对同一 className 写多条规则即可，按声明顺序依次分发。

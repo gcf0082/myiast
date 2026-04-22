@@ -141,13 +141,10 @@ monitor:
     #   xseeker                   = 透传字段，原样进出
     # 目标类来自具体业务环境（com.huawei.bsp.roa.util.restclient.HttpRest），不在的环境
     # 本规则不命中、插件不会被调用、不会报错。
-    # 默认 pluginConfig 已对齐 HttpRest API：
-    #   - 第三个参数 (HttpContext) 上调 putHttpContextHeader(String, String)
-    # 不同 client 改 requestArgIndex / headerSetterMethod 即可（方法签名固定 (String,String)）。
+    # 本插件不接受 pluginConfig，行为对齐 HttpRest 的固定签名：
+    # 反射调用 args[2].putHttpContextHeader(String, String)。需要适配其他出口客户端
+    # 时直接写一个新插件，而不是把这个通用化。
     # - className: com.huawei.bsp.roa.util.restclient.HttpRest
     #   methods:
     #     - "sendHttpRequest#*"
     #   plugin: HttpForwardPlugin
-    #   pluginConfig:
-    #     requestArgIndex: 2
-    #     headerSetterMethod: putHttpContextHeader

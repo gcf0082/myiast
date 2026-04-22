@@ -3,11 +3,10 @@ package com.iast.agent.plugin;
 import com.iast.agent.LogWriter;
 
 import java.lang.reflect.Method;
-import java.util.List;
 import java.util.Map;
 
 /**
- * 出口链路头透传插件。
+ * 出口链路头透传插件（专用于 {@code HttpRest.sendHttpRequest} 形态的 HTTP 客户端）。
  *
  * <p>典型业务场景：本进程作为 HTTP 服务被外部调用 → {@link RequestIdPlugin} 在
  * Servlet 入口把 requestId、client_ip、forward 链等存到 {@link IastContext}；本进程后续
@@ -22,18 +21,16 @@ import java.util.Map;
  *
  * <p>下游服务再 hook 同套 servlet 入口规则，就能把链路接上。
  *
- * <h3>YAML 配置（可选）</h3>
+ * <h3>YAML 用法（无 pluginConfig）</h3>
  * <pre>
  * - className: com.huawei.bsp.roa.util.restclient.HttpRest
  *   methods: ["sendHttpRequest#*"]
  *   plugin: HttpForwardPlugin
- *   pluginConfig:
- *     requestArgIndex: 2          # 默认 2，对齐 HttpRest 的入参顺序
- *     headerSetterMethod: putHttpContextHeader   # 默认就是这个，对齐 HttpRest API
  * </pre>
  *
- * <p>不同业务的 HTTP 客户端 API 不同，{@code requestArgIndex} 和 {@code headerSetterMethod}
- * 都可以在 yaml 里改。方法签名固定 {@code (String, String)}。
+ * <p>本插件不接受 pluginConfig：行为和参数都对齐 {@code HttpRest.sendHttpRequest} 的固定签名
+ * （{@code params[2].putHttpContextHeader(String, String)}），不参数化。需要适配其他出口
+ * 客户端时直接写一个新插件，而不是把通用配置塞进来。
  *
  * <h3>编译解耦</h3>
  * 目标类（HttpRest 之类）不在 agent 模块的 classpath 上，本类**全程反射**，不 import。
@@ -42,47 +39,23 @@ import java.util.Map;
  */
 public class HttpForwardPlugin implements IastPlugin {
 
-    // 出口写到下游请求上的头名（与参考项目对齐）
+    // 下游请求要写入的头名（与参考体系对齐）
     private static final String OUT_FORWARD_REQ_ID = "x-seeker-forward-req-id";
     private static final String OUT_FORWARD_IP     = "x-seeker-forward-ip";
     private static final String OUT_XSEEKER        = "xseeker";
 
-    private static final int    DEFAULT_ARG_INDEX = 2;
-    private static final String DEFAULT_SETTER    = "putHttpContextHeader";
+    // HttpRest.sendHttpRequest 的固定签名约定：
+    //   params[2] = HttpContext，上面有 putHttpContextHeader(String, String) 方法
+    private static final int    REQUEST_ARG_INDEX   = 2;
+    private static final String HEADER_SETTER_NAME  = "putHttpContextHeader";
 
     private LogWriter logWriter;
-    private volatile int     requestArgIndex   = DEFAULT_ARG_INDEX;
-    private volatile String  headerSetterMethod = DEFAULT_SETTER;
 
     @Override
     public void init(Map<String, Object> config) {
         logWriter = LogWriter.getInstance();
-        // 多条 rule 都用本插件时，最后一条 pluginConfig 的设置生效（YAML 声明顺序）。
-        // v1 不区分按 className 取对应配置——少见冲突，需要时再扩。
-        if (config == null) return;
-        Object defs = config.get("definitions");
-        if (!(defs instanceof List)) return;
-        for (Object raw : (List<?>) defs) {
-            if (!(raw instanceof Map)) continue;
-            @SuppressWarnings("unchecked")
-            Map<String, Object> def = (Map<String, Object>) raw;
-            applyOne(def);
-        }
-        logWriter.info("[IAST HttpForward] plugin initialized: requestArgIndex=" + requestArgIndex
-                + ", headerSetterMethod=" + headerSetterMethod);
-    }
-
-    private void applyOne(Map<String, Object> def) {
-        Object v = def.get("requestArgIndex");
-        if (v instanceof Number) {
-            int n = ((Number) v).intValue();
-            if (n >= 0) requestArgIndex = n;
-        }
-        v = def.get("headerSetterMethod");
-        if (v instanceof String) {
-            String s = ((String) v).trim();
-            if (!s.isEmpty()) headerSetterMethod = s;
-        }
+        logWriter.info("[IAST HttpForward] plugin initialized (target: HttpRest.sendHttpRequest, "
+                + "args[" + REQUEST_ARG_INDEX + "]." + HEADER_SETTER_NAME + "(String,String))");
     }
 
     @Override
@@ -101,31 +74,31 @@ public class HttpForwardPlugin implements IastPlugin {
         }
 
         Object[] args = context.getArgs();
-        if (args == null || requestArgIndex >= args.length) {
+        if (args == null || REQUEST_ARG_INDEX >= args.length) {
             if (logWriter.isDebugEnabled()) {
                 int len = args == null ? 0 : args.length;
                 logWriter.debug("[IAST HttpForward] [callId=" + context.getCallId()
-                        + "] arg index " + requestArgIndex + " out of range (args.length=" + len + ")");
+                        + "] arg index " + REQUEST_ARG_INDEX + " out of range (args.length=" + len + ")");
             }
             return;
         }
-        Object target = args[requestArgIndex];
+        Object target = args[REQUEST_ARG_INDEX];
         if (target == null) {
             if (logWriter.isDebugEnabled()) {
                 logWriter.debug("[IAST HttpForward] [callId=" + context.getCallId()
-                        + "] args[" + requestArgIndex + "] is null, skip");
+                        + "] args[" + REQUEST_ARG_INDEX + "] is null, skip");
             }
             return;
         }
 
         Method setter;
         try {
-            setter = target.getClass().getMethod(headerSetterMethod, String.class, String.class);
+            setter = target.getClass().getMethod(HEADER_SETTER_NAME, String.class, String.class);
         } catch (NoSuchMethodException nsme) {
-            // 出口端的「能写头的对象」上没找到约定的 setter——配置错或对象类型不匹配
+            // params[2] 不是预期的 HttpContext 类型——签名变了或挂错方法上
             logWriter.warn("[IAST HttpForward] [callId=" + context.getCallId() + "] "
-                    + target.getClass().getName() + " has no " + headerSetterMethod
-                    + "(String,String); skip forwarding (check pluginConfig.headerSetterMethod / requestArgIndex)");
+                    + target.getClass().getName() + " has no " + HEADER_SETTER_NAME
+                    + "(String,String); skip forwarding (signature mismatch?)");
             return;
         }
 
@@ -149,7 +122,7 @@ public class HttpForwardPlugin implements IastPlugin {
 
         if (logWriter.isDebugEnabled()) {
             logWriter.debug("[IAST HttpForward] [callId=" + context.getCallId()
-                    + "] forwarded headers via " + target.getClass().getName() + "." + headerSetterMethod
+                    + "] forwarded headers via " + target.getClass().getName() + "." + HEADER_SETTER_NAME
                     + " (req_id=" + requestId + ")");
         }
     }
