@@ -201,6 +201,7 @@ public class IastAgent {
                                                  net.bytebuddy.utility.JavaModule module,
                                                  boolean loaded, net.bytebuddy.dynamic.DynamicType dynamicType) {
                         LogWriter.getInstance().info("[IAST Agent] Transformed: " + typeDescription.getName() + " (loaded=" + loaded + ")");
+                        TransformedClasses.getInstance().recordTransform(typeDescription, classLoader);
                     }
 
                     @Override
@@ -208,6 +209,7 @@ public class IastAgent {
                                         net.bytebuddy.utility.JavaModule module,
                                         boolean loaded, Throwable throwable) {
                         LogWriter.getInstance().info("[IAST Agent] Error transforming " + typeName + ": " + throwable.getMessage());
+                        TransformedClasses.getInstance().recordError(typeName, classLoader, throwable);
                     }
                 });
 

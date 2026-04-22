@@ -50,6 +50,7 @@ final class CliHandler {
                 case "plugins": return plugins();
                 case "rules":   return rules(arg);
                 case "classes": return classes(arg);
+                case "transformed": return transformed(arg);
                 case "methods": return methods(arg);
                 case "enable":  return toggleMonitor(true);
                 case "disable": return toggleMonitor(false);
@@ -71,6 +72,7 @@ final class CliHandler {
                 "  plugins              list registered plugins",
                 "  rules [class]        list all monitored classes, or detail for one",
                 "  classes <pattern>    grep loaded classes. use 're:<regex>' for regex",
+                "  transformed [<pat>]  list classes Byte Buddy has woven advice into (use 're:<regex>')",
                 "  methods <class> [name] [all]  print JVM descriptors of a class's methods (YAML-ready)",
                 "  enable               turn monitor ON (MONITOR_ENABLED=true)",
                 "  disable              turn monitor OFF (MONITOR_ENABLED=false)",
@@ -213,6 +215,79 @@ final class CliHandler {
             sb.append("\n... (").append(total - printed).append(" more truncated; total ").append(total).append(")");
         } else {
             sb.append("\ntotal: ").append(total);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 列出 Byte Buddy 已经织入 advice 的类。和 {@code rules}（配置）/ {@code classes}（已加载）
+     * 是不同视角——本命令展示「配置真的被命中、advice 真的织进去」的中间状态。数据来自
+     * {@link com.iast.agent.TransformedClasses}，由 {@link IastAgent} 的 AgentBuilder.Listener
+     * 在每次 onTransformation 时记录。
+     */
+    private static String transformed(String arg) {
+        Map<String, com.iast.agent.TransformedClasses.Entry> all =
+                com.iast.agent.TransformedClasses.getInstance().snapshotTransformed();
+        if (all.isEmpty()) {
+            return "no class transformed yet (agent installed? rules loaded? interface rule too narrow?)";
+        }
+
+        // 解析 pattern：substring（lowercase contains）/ "re:<regex>" / 空（全部）
+        String filterDesc = null;
+        Pattern re = null;
+        String needle = null;
+        if (!arg.isEmpty()) {
+            if (arg.startsWith("re:")) {
+                try {
+                    re = Pattern.compile(arg.substring(3));
+                    filterDesc = "regex='" + arg.substring(3) + "'";
+                } catch (PatternSyntaxException e) {
+                    return "ERROR: invalid regex: " + e.getMessage();
+                }
+            } else {
+                needle = arg.toLowerCase();
+                filterDesc = "filter='" + arg + "'";
+            }
+        }
+
+        // 表头 + 列宽（className 70、loader 38、count 8、ageSec 10）
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder();
+        sb.append(pad("className", 70))
+          .append(pad("loader", 38))
+          .append(pad("count", 8))
+          .append("ageSec").append('\n');
+
+        int total = 0;
+        int printed = 0;
+        for (Map.Entry<String, com.iast.agent.TransformedClasses.Entry> e : all.entrySet()) {
+            String name = e.getKey();
+            boolean match = (re != null) ? re.matcher(name).find()
+                    : (needle == null ? true : name.toLowerCase().contains(needle));
+            if (!match) continue;
+            total++;
+            if (printed >= MAX_RESPONSE_LINES) continue;
+            com.iast.agent.TransformedClasses.Entry entry = e.getValue();
+            // loader 集合一般 1 个；多 CL 时逗号拼，避免行太宽用 28 左右截断
+            String loader = String.join(",", entry.loaders);
+            if (loader.length() > 36) loader = loader.substring(0, 33) + "...";
+            long ageSec = (now - entry.firstAtMs) / 1000L;
+            sb.append(pad(name, 70))
+              .append(pad(loader, 38))
+              .append(pad(String.valueOf(entry.count.get()), 8))
+              .append(ageSec).append('\n');
+            printed++;
+        }
+
+        if (total == 0) {
+            return "no transformed class matches: " + arg;
+        }
+
+        if (total > printed) {
+            sb.append("... (").append(total - printed).append(" more truncated; total ").append(total).append(")");
+        } else {
+            sb.append("total: ").append(total).append(" transformed classes");
+            if (filterDesc != null) sb.append("  (").append(filterDesc).append(": ").append(printed).append(" shown)");
         }
         return sb.toString();
     }

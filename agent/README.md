@@ -283,6 +283,7 @@ agent 侧代码（`com.iast.agent.cli.{CliServer, CliHandler, WsFrame}`）依旧
 | `rules <class>` | 打印单个类的 matchType、关联插件、方法签名列表（`<class>` 可 FQ 也可 internal，两者等价） |
 | `classes <substring>` | 在 `Instrumentation.getAllLoadedClasses()` 里按**子串**（大小写不敏感）搜 |
 | `classes re:<regex>` | 正则搜（`Pattern.compile` + `matcher.find()`），要精确锚自己加 `^`/`$` |
+| `transformed [<pat>]` | 列出 Byte Buddy **真的织入了 advice** 的类（配置和加载之间的中间状态）；支持子串 / `re:<regex>` 过滤；用于排查"规则配了但没拦截"、"interface 规则展开成哪些具体类" |
 | `methods <class>` | 打印类声明的方法（含 ctor）+ 对应 JVM 描述符，YAML 可直接粘贴 |
 | `methods <class> <filter>` | 方法名子串过滤（大小写不敏感） |
 | `methods <class> all` | 额外沿 superclass 链展开（到 Object 前停），注释里标 `[inherited from X]` |
@@ -302,6 +303,9 @@ iast> rules java/io/File                                # internal 也行
 iast> methods com.iast.demo.FileCheckController         # 列全部声明方法 + 描述符
 iast> methods java.io.File exists                       # 过滤方法名
 iast> methods org.springframework.web.servlet.DispatcherServlet all service  # 展开继承链
+iast> transformed                                       # 全部已 transformed 类
+iast> transformed servlet                               # 子串过滤（看 interface 规则展开了哪些）
+iast> transformed re:^java\.                            # 正则
 ```
 
 **methods 命令**输出的每一行是 YAML 可直接粘贴的形态：
