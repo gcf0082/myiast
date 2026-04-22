@@ -360,12 +360,19 @@ monitor:
 每行一个 JSON 对象：
 
 ```json
-{"ts":"2026-04-17T09:12:34.567Z","id":"java.nio.file.Files.list","event":"file list | /tmp","event_type":"file.list","event_level":"info","phase":"enter","requestId":"abc...","callId":42,"className":"java.nio.file.Files","methodName":"list","thread":"http-nio-8080-exec-1","params":{"file_path":"/tmp"}}
+{"ts":"2026-04-17T09:12:34.567Z","id":"java.nio.file.Files.list","event":"file list | /tmp","event_type":"file.list","event_level":"info","phase":"enter","requestId":"abc...","x-request-id":"abc...","forward_req_id":"upstream-A,upstream-B","callId":42,"className":"java.nio.file.Files","methodName":"list","thread":"http-nio-8080-exec-1","params":{"file_path":"/tmp"}}
 ```
+
+链路相关字段：
+- `requestId` —— 本机请求 ID，由 `RequestIdPlugin` 生成 / 复用
+- `x-request-id` —— 与 `requestId` 同值，HTTP 头形式的字段名（方便消费侧按 header 名 grep）
+- `forward_req_id` —— 上游 `x-seeker-forward-req-id` 链；本机不在链路里时为 `null`，便于消费侧字段集稳定
 
 配合 `jq` / Filebeat / Vector 消费：
 ```bash
 tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.event_type == "file.list")'
+# 找一条上游链路追踪到的事件
+tail -f /tmp/iast-events-*.jsonl | jq -c 'select(.forward_req_id != null)'
 ```
 
 ## 日志级别 & 调试

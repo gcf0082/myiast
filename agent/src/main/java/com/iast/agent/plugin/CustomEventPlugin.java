@@ -90,6 +90,13 @@ public class CustomEventPlugin implements IastPlugin {
         String requestId = RequestIdHolder.get();
         if (requestId == null) requestId = ctx.getRequestId();
         evt.put("requestId", requestId);
+        // x-request-id 与 requestId 值相同，但用 HTTP 头形式的字段名方便下游 grep / Filebeat
+        // 模板按字面 header key 提取（这样跨语言消费方对齐 HTTP 协议层）
+        evt.put("x-request-id", requestId);
+        // forward_req_id 是上游 x-seeker-forward-req-id 头透进来的链，由 RequestIdPlugin
+        // 入口采集到 IastContext。本字段总是写入（无值时为 null），便于消费侧统一字段集。
+        Object forwardReqId = IastContext.getAttribute(RequestIdPlugin.ATTR_FORWARD_REQ_ID);
+        evt.put("forward_req_id", forwardReqId);
 
         evt.put("callId", ctx.getCallId());
         evt.put("className", ctx.getClassName());
