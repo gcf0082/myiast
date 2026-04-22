@@ -4,6 +4,7 @@ import com.iast.agent.LogWriter;
 import com.iast.agent.plugin.event.EventWriter;
 import com.iast.agent.plugin.event.Expression;
 import com.iast.agent.plugin.event.JsonWriter;
+import com.iast.agent.plugin.event.Predicate;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,7 +22,8 @@ import java.util.Map;
 public class CustomEventPlugin implements IastPlugin {
 
     private static final class EventDef {
-        String id;
+        String id;             // 事件 id（出现在 JSONL 的 "id" 字段；老规矩 = className.methodName 或 user-override）
+        String ruleId;         // rules.d 顶层 rule.id；filter.target 用这个做匹配
         String className;
         String methodName;
         Map<String, Expression> paramExprs;
@@ -29,6 +31,9 @@ public class CustomEventPlugin implements IastPlugin {
         String eventType;
         String eventLevel;
         EnumSet<MethodContext.CallPhase> phases;
+        // filtersDir 关联到本 EventDef 的谓词列表；filterWhen 全过 + filterUnless 全不过才发
+        List<Predicate> filterWhen;
+        List<Predicate> filterUnless;
     }
 
     // key: className + "." + methodName
@@ -54,6 +59,70 @@ public class CustomEventPlugin implements IastPlugin {
             }
         }
         LogWriter.getInstance().info("[CustomEventPlugin] loaded " + ok + " definition(s), " + fail + " failed");
+
+        // 关联 filtersDir 加载来的过滤器：按 target=ruleId 找匹配的 EventDef 挂上 when/unless
+        attachFilters(config.get("filters"));
+    }
+
+    /**
+     * 把 IastAgent 透过来的 FilterConfig 列表，按 target 与每个 EventDef.id 匹配挂载。
+     * 找不到 target 的 filter → WARN+跳过。同一 EventDef 多个 filter → when/unless 列表追加合并。
+     */
+    private void attachFilters(Object filtersObj) {
+        if (!(filtersObj instanceof List)) return;
+        // 反向索引：rule.id → 多 EventDef（理论上每个 ruleId 只对应一个 def，但容错）
+        Map<String, List<EventDef>> byRuleId = new HashMap<>();
+        for (EventDef def : byMethodId.values()) {
+            if (def.ruleId == null) continue;
+            byRuleId.computeIfAbsent(def.ruleId, k -> new ArrayList<>()).add(def);
+        }
+        int attached = 0, missed = 0;
+        for (Object f : (List<?>) filtersObj) {
+            if (!(f instanceof com.iast.agent.config.FilterConfig)) continue;
+            com.iast.agent.config.FilterConfig fc = (com.iast.agent.config.FilterConfig) f;
+            List<EventDef> targets = byRuleId.get(fc.getTarget());
+            if (targets == null || targets.isEmpty()) {
+                LogWriter.getInstance().warn("[CustomEventPlugin] filter [id=" + fc.getId()
+                        + "] target rule '" + fc.getTarget()
+                        + "' not found among CustomEventPlugin rules; skip");
+                missed++;
+                continue;
+            }
+            List<Predicate> when = compilePredicateList(fc.getWhen(), fc.getId(), "when");
+            List<Predicate> unless = compilePredicateList(fc.getUnless(), fc.getId(), "unless");
+            for (EventDef def : targets) {
+                if (!when.isEmpty()) {
+                    if (def.filterWhen == null) def.filterWhen = new ArrayList<>();
+                    def.filterWhen.addAll(when);
+                }
+                if (!unless.isEmpty()) {
+                    if (def.filterUnless == null) def.filterUnless = new ArrayList<>();
+                    def.filterUnless.addAll(unless);
+                }
+                LogWriter.getInstance().info("[CustomEventPlugin] attached filter [id=" + fc.getId()
+                        + "] to rule [ruleId=" + def.ruleId + "] (when=" + when.size()
+                        + ", unless=" + unless.size() + ")");
+                attached++;
+            }
+        }
+        if (attached > 0 || missed > 0) {
+            LogWriter.getInstance().info("[CustomEventPlugin] filter attach summary: "
+                    + attached + " attached, " + missed + " missed");
+        }
+    }
+
+    private List<Predicate> compilePredicateList(List<Map<String, Object>> raw, String filterId, String role) {
+        if (raw == null || raw.isEmpty()) return Collections.emptyList();
+        List<Predicate> out = new ArrayList<>(raw.size());
+        for (Map<String, Object> p : raw) {
+            try {
+                out.add(Predicate.compile(p));
+            } catch (Exception e) {
+                LogWriter.getInstance().warn("[CustomEventPlugin] filter [id=" + filterId + "] " + role
+                        + " predicate skip (compile failed): " + p + " -> " + e.getMessage());
+            }
+        }
+        return out;
     }
 
     @Override
@@ -69,6 +138,20 @@ public class CustomEventPlugin implements IastPlugin {
             for (Map.Entry<String, Expression> e : def.paramExprs.entrySet()) {
                 Object v = e.getValue().eval(ctx);
                 paramValues.put(e.getKey(), v == null ? null : String.valueOf(v));
+            }
+        }
+
+        // 1.5) 应用 filter（filtersDir 加载、按 def.id 关联进来）：
+        //      任一 unless 命中 → 静默 drop；when 非空且未全过 → 静默 drop。
+        //      用户明确不要 dropped 计数，纯 silent。
+        if (def.filterUnless != null) {
+            for (Predicate p : def.filterUnless) {
+                if (p.test(ctx)) return;
+            }
+        }
+        if (def.filterWhen != null && !def.filterWhen.isEmpty()) {
+            for (Predicate p : def.filterWhen) {
+                if (!p.test(ctx)) return;
             }
         }
 
@@ -124,28 +207,30 @@ public class CustomEventPlugin implements IastPlugin {
     private EventDef parseDef(Map<String, Object> m) {
         EventDef def = new EventDef();
         def.id = strOr(m.get("id"), null);
+        def.ruleId = strOr(m.get("ruleId"), null);   // 由 MonitorConfig.applyRule 透过来；filter.target 匹配它
         def.eventTemplate = strOr(m.get("event"), "");
         def.eventType = strOr(m.get("event_type"), "custom");
         def.eventLevel = strOr(m.get("event_level"), "info");
 
-        // 从id解析className + methodName；若无id则回退用className+第一个method
-        String className = null, methodName = null;
-        if (def.id != null && !def.id.isEmpty()) {
+        // className / methodName 优先从显式字段拿（applyRule 总会 putIfAbsent 进去）；
+        // id 仅作为人读标签，不再用作派生 —— 否则用户用 "file.io.File" 这种点分友好 id
+        // 会被误解析成 className="file.io" methodName="File"，运行期路由 miss 不发事件。
+        String className = strOr(m.get("className"), null);
+        String methodName = null;
+        List<String> methods = (List<String>) m.get("methods");
+        if (methods != null && !methods.isEmpty()) {
+            String first = methods.get(0);
+            int hash = first.indexOf('#');
+            methodName = hash > 0 ? first.substring(0, hash) : first;
+        }
+        // 兜底：极端老用法 className/methods 都没的话，按老规矩从 def.id 解析
+        if (className == null && def.id != null && !def.id.isEmpty()) {
             int parenIdx = def.id.indexOf('(');
             int searchEnd = parenIdx > 0 ? parenIdx : def.id.length();
             int lastDot = def.id.lastIndexOf('.', searchEnd - 1);
             if (lastDot > 0) {
                 className = def.id.substring(0, lastDot);
                 methodName = def.id.substring(lastDot + 1, searchEnd);
-            }
-        }
-        if (className == null) {
-            className = strOr(m.get("className"), null);
-            List<String> methods = (List<String>) m.get("methods");
-            if (methods != null && !methods.isEmpty()) {
-                String first = methods.get(0);
-                int hash = first.indexOf('#');
-                methodName = hash > 0 ? first.substring(0, hash) : first;
             }
         }
         if (className == null || methodName == null) {

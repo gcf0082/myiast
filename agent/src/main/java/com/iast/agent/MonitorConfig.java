@@ -38,6 +38,10 @@ public class MonitorConfig {
     private static volatile String pluginsDir = "";
     // 规则目录（每个 yaml 文件 multi-doc 规则）。空字符串 = 不从目录加载
     private static volatile String rulesDir = "";
+    // 过滤器目录（每个 yaml 文件 multi-doc 过滤器）。空字符串 = 不加载任何过滤器
+    private static volatile String filtersDir = "";
+    // 加载完的过滤器原始定义（IastAgent.initPlugins 时塞进每个插件的 init config）
+    private static final List<com.iast.agent.config.FilterConfig> filterDefs = new ArrayList<>();
     // internal className -> 该类下所有规则的 id 列表（id 缺省时该 rule 不计入；CLI rules 命令展示用）
     private static final Map<String, List<String>> classRuleIds = new HashMap<>();
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
@@ -188,6 +192,19 @@ public class MonitorConfig {
             if (!rulesDir.isEmpty()) {
                 LogWriter.getInstance().info("[IAST Agent] rulesDir: " + rulesDir);
             }
+
+            // filtersDir：和 rulesDir 同套相对路径解析
+            String fd = defCfg.getFiltersDir();
+            filtersDir = fd == null ? "" : fd.trim();
+            if (!filtersDir.isEmpty() && !new File(filtersDir).isAbsolute()) {
+                File cfgParent = new File(configFilePath).getAbsoluteFile().getParentFile();
+                if (cfgParent != null) {
+                    filtersDir = new File(cfgParent, filtersDir).getAbsolutePath();
+                }
+            }
+            if (!filtersDir.isEmpty()) {
+                LogWriter.getInstance().info("[IAST Agent] filtersDir: " + filtersDir);
+            }
         }
 
         // inline monitor.rules: 已废弃。检测到老 yaml 仍有该节就 WARN，但不解析。
@@ -201,6 +218,12 @@ public class MonitorConfig {
         // 从 rulesDir 加载所有规则
         if (!rulesDir.isEmpty()) {
             loadRulesDir(rulesDir);
+        }
+
+        // 从 filtersDir 加载所有过滤器（仅作 raw FilterConfig 列表暂存，由 IastAgent.initPlugins
+        // 在注册插件时塞进 init config，再由 CustomEventPlugin.init 关联到对应 EventDef）
+        if (!filtersDir.isEmpty()) {
+            loadFiltersDir(filtersDir);
         }
     }
 
@@ -305,6 +328,70 @@ public class MonitorConfig {
     }
 
     /**
+     * 递归扫 filtersDir 下所有 *.yaml/*.yml，typed Constructor(FilterConfig.class) loadAll，
+     * 把 FilterConfig 暂存到 {@link #filterDefs}。和 rulesDir 的加载约定一致：
+     * 子目录递归、按相对路径字典序、单文件失败 WARN+继续、symlink 用 canonical-path Set 防循环。
+     * 关联到具体 rule 的工作留给 IastAgent / CustomEventPlugin。
+     */
+    private static void loadFiltersDir(String absDirPath) {
+        File dir = new File(absDirPath);
+        if (!dir.exists()) {
+            LogWriter.getInstance().warn("[IAST Agent] filtersDir does not exist: " + absDirPath);
+            return;
+        }
+        if (!dir.isDirectory()) {
+            LogWriter.getInstance().warn("[IAST Agent] filtersDir is not a directory: " + absDirPath);
+            return;
+        }
+        List<File> files = new ArrayList<>();
+        Set<String> visited = new java.util.HashSet<>();
+        walkRules(dir, files, visited);  // 同套递归 walker
+        if (files.isEmpty()) {
+            LogWriter.getInstance().info("[IAST Agent] no *.yaml/*.yml found under " + absDirPath + " (recursive)");
+            return;
+        }
+        final String rootCanon;
+        try { rootCanon = dir.getCanonicalPath(); }
+        catch (IOException e) {
+            LogWriter.getInstance().warn("[IAST Agent] cannot canonicalize filtersDir: " + e.getMessage());
+            return;
+        }
+        files.sort((a, b) -> relPath(a, rootCanon).compareTo(relPath(b, rootCanon)));
+
+        for (File f : files) {
+            String origin = relPath(f, rootCanon);
+            int loaded = 0;
+            try (InputStream in = new FileInputStream(f)) {
+                Yaml y = new Yaml(new org.yaml.snakeyaml.constructor.Constructor(
+                        com.iast.agent.config.FilterConfig.class, new org.yaml.snakeyaml.LoaderOptions()));
+                for (Object doc : y.loadAll(in)) {
+                    if (doc == null) continue;
+                    if (!(doc instanceof com.iast.agent.config.FilterConfig)) {
+                        LogWriter.getInstance().warn("[IAST Agent] filter doc in " + origin
+                                + " is not a filter (got " + doc.getClass().getSimpleName() + "); skip");
+                        continue;
+                    }
+                    com.iast.agent.config.FilterConfig fc = (com.iast.agent.config.FilterConfig) doc;
+                    if (fc.getTarget() == null || fc.getTarget().isEmpty()) {
+                        LogWriter.getInstance().warn("[IAST Agent] filter [id=" + fc.getId() + "] in "
+                                + origin + " missing required field 'target' (rule id); skip");
+                        continue;
+                    }
+                    filterDefs.add(fc);
+                    loaded++;
+                    LogWriter.getInstance().info("[IAST Agent] Loaded filter: [id=" + fc.getId()
+                            + "] target=" + fc.getTarget() + " (from: " + origin + ")");
+                }
+            } catch (Exception e) {
+                LogWriter.getInstance().warn("[IAST Agent] failed to load filters from " + origin
+                        + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                continue;
+            }
+            LogWriter.getInstance().info("[IAST Agent] Loaded " + loaded + " filter(s) from " + origin);
+        }
+    }
+
+    /**
      * 把一条 rule 合到全局状态里（monitorRules / classPluginMap / classMatchType /
      * classWrapServletRequest / pluginConfigs / classRuleIds）。所有规则源（inline 已废弃，
      * 当前只剩 rulesDir）共用本路径，保证语义一致。
@@ -359,11 +446,13 @@ public class MonitorConfig {
             pluginList.add(pluginName);
         }
 
-        // pluginConfig 块（附带 className/methods，给插件 init 用）
+        // pluginConfig 块（附带 className/methods/ruleId，给插件 init 用）
         if (rule.getPluginConfig() != null && !rule.getPluginConfig().isEmpty()) {
             Map<String, Object> block = new HashMap<>(rule.getPluginConfig());
             block.putIfAbsent("className", className);
             block.putIfAbsent("methods", rule.getMethods());
+            // rule.id 单独放 "ruleId" 而非 "id"——保留 pluginConfig.id（事件 id）的原语义不被覆盖；
+            // CustomEventPlugin 用 ruleId 做 filter target 匹配，事件本身的 id 仍按老规矩 auto-derive。
             if (rule.getId() != null) block.putIfAbsent("ruleId", rule.getId());
             pluginConfigs.computeIfAbsent(pluginName, k -> new ArrayList<>()).add(block);
         }
@@ -541,6 +630,14 @@ public class MonitorConfig {
      */
     public static List<String> getRuleIds(String internalClassName) {
         return classRuleIds.getOrDefault(internalClassName, java.util.Collections.emptyList());
+    }
+
+    /**
+     * 返回 filtersDir 加载的所有 FilterConfig 不可变快照。IastAgent.initPlugins 在注册插件时
+     * 把它塞进每个插件的 init config（key="filters"），由 CustomEventPlugin 自行消费。
+     */
+    public static List<com.iast.agent.config.FilterConfig> getFilterDefs() {
+        return java.util.Collections.unmodifiableList(filterDefs);
     }
 
     /**

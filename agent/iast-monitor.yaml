@@ -37,5 +37,11 @@ monitor:
     # 相对路径按本 yaml 所在目录解析。空字符串 = 不从目录加载（默认；需要才显式开启）。
     rulesDir: ./rules.d
 
+    # 过滤器目录：和 rulesDir 同套约定（递归扫子目录、每个 yaml multi-doc、相对路径按本
+    # yaml 解析）。每条 filter 通过 target: <rule-id> 关联到一条规则上，命中时静默 drop
+    # 该规则要写的事件，不计数、不打额外日志。空字符串 = 不加载任何过滤器（默认）。
+    # 详见 README.md 「事件过滤 filtersDir」章节。
+    filtersDir: ./filters.d
+
   # ⚠️ 历史 monitor.rules: inline 形式已废弃。检测到此节存在会 WARN 一句但不解析。
   # 把规则迁到 rulesDir 指向的目录即可，每条规则一份小 yaml（或 multi-doc 一文件多条）。

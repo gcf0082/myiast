@@ -1,0 +1,22 @@
+# 过滤掉 java.io.File 规则（rules.d/file-io.yaml 的 id=file.io.File）里来自 /proc/ 和 /sys/
+# 的噪音事件。这两个目录被 JVM 自身和很多框架在启动时反复访问（线程 / cgroup / 网络
+# 配置等），不属于业务行为。
+#
+# 同套结构可对其它 rule id 写过滤器：每条 filter 用 target: <rule-id> 关联回 rules.d 里
+# 那条规则。多个 filter 关联同一 rule → when/unless 列表合并。
+#
+# 谓词字段：
+#   expr   —— 必填，复用 Expression 语法（params[0] / target.toString() / methodName / 等）
+#   op     —— 必填，equals / contains / startsWith / endsWith / matches（regex）
+#   value  —— 必填，对照值；op=matches 时是 regex
+#   negate —— 可选，true 时把判断结果取反（避免每个 op 都搞 !equals/!contains）
+
+id: filter.file-io-noise
+target: file.io.File
+unless:
+  - expr: "params[0]"
+    op: startsWith
+    value: "/proc/"
+  - expr: "params[0]"
+    op: startsWith
+    value: "/sys/"

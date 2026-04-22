@@ -356,6 +356,10 @@ public class IastAgent {
             java.util.List<java.util.Map<String, Object>> defs = allCfgs.getOrDefault(name, java.util.Collections.emptyList());
             java.util.Map<String, Object> cfg = new java.util.HashMap<>();
             cfg.put("definitions", defs);
+            // 把 filtersDir 加载来的 FilterConfig 列表透给所有插件（占位字段，目前只有
+            // CustomEventPlugin 会消费；其它插件忽略）。每条 filter 自带 target=ruleId，
+            // 由 CustomEventPlugin.init 在自己 EventDef 里查 def.id == target 来挂载。
+            cfg.put("filters", MonitorConfig.getFilterDefs());
             plugin.init(cfg);
             pm.registerPlugin(name, plugin);
             LogWriter.getInstance().info("[IAST Agent] Initialized plugin: " + name + " with " + defs.size() + " rule(s)");

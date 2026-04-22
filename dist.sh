@@ -45,6 +45,8 @@ cp "${AGENT_DIR}/README.md"               "${OUT}/"
 cp "${AGENT_DIR}/iast-monitor.yaml"       "${OUT}/"
 # 规则目录：iast-monitor.yaml 默认指向 ./rules.d，整个目录拷过去
 cp -r "${AGENT_DIR}/rules.d"              "${OUT}/rules.d"
+# 过滤器目录：iast-monitor.yaml 默认指向 ./filters.d，同样整个拷过去
+cp -r "${AGENT_DIR}/filters.d"            "${OUT}/filters.d"
 cp "${AGENT_DIR}/iast-start.sh"           "${OUT}/"
 cp "${AGENT_DIR}/iast-stop.sh"            "${OUT}/"
 cp "${AGENT_DIR}/iast-start-jattach.sh"   "${OUT}/"

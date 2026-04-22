@@ -199,6 +199,50 @@ pluginConfig:
   on: [enter]                                   # 触发阶段：enter/exit/exception，默认 enter
 ```
 
+## 事件过滤 filtersDir
+
+某些场景下 CustomEventPlugin 会刷出海量 JSONL 事件（启动期 `File.exists()` 反复调、高 QPS 接口、循环里调被监控方法）。在主 yaml 里配 `monitor.default.filtersDir` 指向一个目录，每个 yaml 文件 multi-doc 写过滤器，按 **rule id** 关联到 `rulesDir` 里某条规则。命中时静默 drop 该规则要写的事件，不计数、不打额外日志。
+
+样例 `filters.d/file-io-noise.yaml`：
+
+```yaml
+id: filter.file-io-noise          # 可选，给 CLI / 日志展示用
+target: file.io.File              # 必填，关联的 rule id（rules.d 里那条规则的 id）
+
+unless:                           # 任一谓词为真即 drop（OR）
+  - expr: "params[0]"
+    op: startsWith
+    value: "/proc/"
+  - expr: "params[0]"
+    op: startsWith
+    value: "/sys/"
+
+when:                             # 可选；非空时所有谓词都为真才发（AND）
+  - expr: "params[0].toString()"
+    op: endsWith
+    value: ".jsp"
+```
+
+谓词字段：
+
+| 字段 | 必填 | 说明 |
+|-----|------|------|
+| `expr` | ✓ | 复用 `Expression` 语法（`params[0]` / `params[0].toString()` / `target.getClass().getSimpleName()` / `methodName` / 等） |
+| `op` | ✓ | `equals` / `contains` / `startsWith` / `endsWith` / `matches`（regex） |
+| `value` | ✓ | 对照值；op=matches 时是 `Pattern.compile` 的正则 |
+| `negate` | | 默认 `false`；设 `true` 把判断结果取反，避免每个 op 都搞 `!equals`/`!contains` |
+
+短路顺序：先扫 `unless`（任一命中→drop），再扫 `when`（非空时必须全过）。任何谓词运行期异常 → 视作 false（首次 WARN 一次），不打断业务。
+
+启动日志：
+```
+[INFO] [IAST Agent] filtersDir: /path/to/filters.d
+[INFO] [IAST Agent] Loaded 1 filter(s) from file-io-noise.yaml
+[INFO] [CustomEventPlugin] attached filter [id=filter.file-io-noise] to rule [id=file.io.File] (when=0, unless=2)
+```
+
+target 找不到对应 rule（拼错 / 顺序错 / 不属于 CustomEventPlugin）→ WARN 一句、跳过该 filter，不打断启动。
+
 ## 接口级监控（matchType: interface）
 
 规则的 `className` 写在接口或抽象父类上，Agent 会展开到该接口 / 父类的**所有具体实现类**，

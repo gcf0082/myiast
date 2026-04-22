@@ -21,6 +21,9 @@ public class MonitorDefaultConfig {
     // 分割），每个 doc 一条规则。空字符串 = 不从目录加载（默认）。
     // inline monitor.rules: 已移除——规则只能从此目录加载。
     private String rulesDir = "";
+    // 过滤器目录：和 rulesDir 同套约定（递归扫子目录、typed loadAll、相对路径按主 yaml 解析）。
+    // 每条 filter 用 target: <rule-id> 关联到一条规则上。空字符串 = 不加载任何过滤器（默认）。
+    private String filtersDir = "";
 
     public List<String> getEvents() {
         return events;
@@ -60,5 +63,13 @@ public class MonitorDefaultConfig {
 
     public void setRulesDir(String rulesDir) {
         this.rulesDir = rulesDir == null ? "" : rulesDir;
+    }
+
+    public String getFiltersDir() {
+        return filtersDir;
+    }
+
+    public void setFiltersDir(String filtersDir) {
+        this.filtersDir = filtersDir == null ? "" : filtersDir;
     }
 }
