@@ -41,7 +41,9 @@ public class LogWriter {
 
     private LogWriter() {
         String pid = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
-        this.logPath = "/tmp/iast-agent-" + pid + ".log";
+        // 默认布局：/tmp/iast_<pid>/iast.log（前缀 iast_ 避免在 /tmp 下出现纯数字目录）。
+        // yaml 里配 outputDir / instanceName 会通过 setLogPath 切走。
+        this.logPath = "/tmp/iast_" + pid + "/iast.log";
     }
 
     public static LogWriter getInstance() {
@@ -96,6 +98,9 @@ public class LogWriter {
 
     private void openWriter() {
         try {
+            java.io.File f = new java.io.File(logPath);
+            java.io.File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
             FileOutputStream fos = new FileOutputStream(logPath, true);
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
             writer = new BufferedWriter(osw);

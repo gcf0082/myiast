@@ -35,7 +35,7 @@ IAST_VERSION=1.2.3 ./dist.sh
 ( cd demo-spring && ./test-monitor-switch.sh )
 ```
 
-两个脚本都能 layout 自适应——源码仓和解包后的 release tarball（`demo/` 子目录）下都能跑。它们会在 8080 端口起 Spring Boot jar，然后 grep `/tmp/iast-agent-<pid>.log` 和 `/tmp/iast-events-<pid>.jsonl` 检查预期行。
+两个脚本都能 layout 自适应——源码仓和解包后的 release tarball（`demo/` 子目录）下都能跑。它们会在 8080 端口起 Spring Boot jar，然后各自在临时目录里按 `output.instanceName` 划定的子目录 grep `iast.log` / `iast.jsonl`。
 
 手动跑 demo：
 ```bash
@@ -112,10 +112,15 @@ CLI 拆在两个模块。**Agent 侧代码**（`agent/src/main/java/com/iast/age
 
 会话结束：agent 关 socket、dialer 线程退出。没有自动重连——再连就再跑一次 `iast-cli-jattach.sh`。
 
-### 输出文件（都在 `/tmp/`）
+### 输出文件
 
-- `iast-agent-<pid>.log` —— 人读的 agent 诊断日志 + `LogPlugin` 输出
-- `iast-events-<pid>.jsonl` —— `CustomEventPlugin` 通过 `EventWriter` 写的结构化事件，一行一个 JSON
+文件固定名 `iast.log` / `iast.jsonl`，路径由 `output.outputDir` + `output.instanceName` 决定：
+`<outputDir>/<instanceName>/iast.{log,jsonl}`
+
+- **`outputDir`**（默认 `/tmp`）：输出根目录，相对路径按 yaml 所在目录解析，不存在自动 mkdirs。
+- **`instanceName`**（默认 `iast_<pid>`）：实例标识，作为子目录名，把多 JVM 隔离从"文件名 pid 后缀"抬到"目录层"。支持 `${VAR}` 引环境变量（env 未设 → WARN + 替换空串；解析后为空 → 兜底 `iast_<pid>`）。前缀 `iast_` 避免在 `/tmp` 下出现纯数字目录。
+
+例：`outputDir: /var/log/iast`、`instanceName: ${HOSTNAME}` → `/var/log/iast/web01/iast.log`
 
 不再写 CLI 端口文件了（agent 不再有自己的监听端口）。这些文件**不会自动清理**——线上请配 logrotate。
 

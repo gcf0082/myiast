@@ -12,6 +12,10 @@ output:
   # 想看 RequestIdPlugin 的 setHeader 决策路径 / 插件分发 miss 等细节，调成 debug；
   # 也可以挂 CLI 之后 `loglevel debug` 运行时切换。
   logLevel: info
+  # 输出根目录；最终 iast.log + iast.jsonl 落在 outputDir/<instanceName>/ 下。
+  # 不配 instanceName → 自动用 iast_<pid> 作为子目录名（前缀避免 /tmp 下出现纯数字目录）。
+  outputDir: logs
+  # instanceName: ${HOSTNAME}      # 想用环境变量做实例名就打开
 
 monitor:
   default:

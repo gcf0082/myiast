@@ -7,7 +7,7 @@
 #   case B  includeFutureClasses=false + premain  → 预装快照里没有 DispatcherServlet，
 #                                                    不应出现接口规则产生的 service() 拦截日志
 #
-# 通过 RequestIdPlugin 在 /tmp/iast-agent-<pid>.log 写的 "[IAST RequestId]...Request Started"
+# 通过 RequestIdPlugin 在 <TMP_DIR>/<instanceName>/iast.log 写的 "[IAST RequestId]...Request Started"
 # 行数来判定（RequestIdPlugin 不按 className 过滤规则，interface 分派进来它就会跑）。
 
 set -euo pipefail
@@ -50,6 +50,8 @@ write_config() {
     local delay_ms="${2:-0}"
     local rules_dir="$TMP_DIR/rules-${include_future}-d${delay_ms}"
     local path="$TMP_DIR/config-${include_future}-d${delay_ms}.yaml"
+    # instanceName 决定 outputDir 下子目录名，测试时按 case 命名，便于 grep 特定 case 的日志
+    local inst="case-${include_future}-d${delay_ms}"
     mkdir -p "$rules_dir"
     cat > "$rules_dir/servlet-trace.yaml" <<'EOF'
 id: test.trace.req-id
@@ -65,6 +67,8 @@ output:
   return: true
   stacktrace: false
   stacktraceDepth: 4
+  outputDir: ${TMP_DIR}
+  instanceName: ${inst}
 
 monitor:
   default:
@@ -73,6 +77,13 @@ monitor:
     rulesDir: ${rules_dir}
 EOF
     echo "$path"
+}
+
+# 根据 write_config 的命名规则反推日志文件路径
+iast_log_for() {
+    local include_future="$1"
+    local delay_ms="${2:-0}"
+    echo "$TMP_DIR/case-${include_future}-d${delay_ms}/iast.log"
 }
 
 run_case() {
@@ -118,7 +129,8 @@ run_case() {
     done
     sleep 1
 
-    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+    local iast_log
+    iast_log="$(iast_log_for "$include_future" 0)"
     [ -f "$iast_log" ] || { echo "❌ 找不到 Agent 日志: $iast_log"; return 1; }
 
     echo "  Agent log: $iast_log"
@@ -202,7 +214,8 @@ run_delay_case() {
     [ "$ready" -eq 1 ] || { echo "❌ Tomcat 未就绪"; tail -30 "$stdout_log"; return 1; }
     echo "  ✓ Tomcat 就绪"
 
-    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+    local iast_log
+    iast_log="$(iast_log_for "$include_future" "$delay_ms")"
     [ -f "$iast_log" ] || { echo "❌ 找不到 Agent 日志: $iast_log"; return 1; }
 
     # 确认启动日志里看到了 "Bytecode install deferred"
@@ -257,6 +270,7 @@ write_body_config() {
     local hard_limit="${1:-10485760}"
     local rules_dir="$TMP_DIR/rules-body-h${hard_limit}"
     local path="$TMP_DIR/config-body-h${hard_limit}.yaml"
+    local inst="case-body-h${hard_limit}"
     mkdir -p "$rules_dir"
 
     # RequestIdPlugin 挂在 Servlet 接口规则上——和下面 HttpServlet exact+wrap 的规则
@@ -287,6 +301,8 @@ output:
   args: true
   return: true
   stacktrace: false
+  outputDir: ${TMP_DIR}
+  instanceName: ${inst}
 
 monitor:
   default:
@@ -323,7 +339,7 @@ run_body_case() {
     [ "$ready" -eq 1 ] || { echo "❌ Tomcat 未就绪"; tail -30 "$stdout_log"; return 1; }
     echo "  ✓ Tomcat 就绪"
 
-    local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
+    local iast_log="$TMP_DIR/case-body-h10485760/iast.log"
 
     # D.0：上游带 X-Seeker-Request-Id 头时 RequestIdPlugin 应直接复用，不生成新 UUID
     echo "  ---------- D.0 上游 X-Seeker-Request-Id 直通 ----------"

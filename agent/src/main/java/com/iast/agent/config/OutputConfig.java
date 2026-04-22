@@ -11,10 +11,14 @@ public class OutputConfig {
     private String eventsPath;
     /** 日志级别：debug / info / warn / error，默认 info。MonitorConfig 加载完后会传给 LogWriter。 */
     private String logLevel;
-    /** 输出目录：iast-agent-&lt;pid&gt;.log 和 iast-events-&lt;pid&gt;.jsonl 共用。空 = 默认 /tmp。
-     *  相对路径按主 yaml 所在目录解析；不存在自动 mkdirs。
-     *  与 eventsPath 同时配 → eventsPath 优先（仅作用 events 文件，log 仍走 outputDir）。 */
+    /** 输出根目录。最终文件落在 outputDir/&lt;instanceName&gt;/iast.{log,jsonl}。
+     *  相对路径按主 yaml 所在目录解析；不存在自动 mkdirs。空 = 默认 /tmp。
+     *  与 eventsPath 同时配 → eventsPath 优先（仅作用 events 文件，log 仍走 outputDir/instanceName）。 */
     private String outputDir;
+    /** 实例标识，作为 outputDir 下的子目录名。支持 ${VAR} 引环境变量
+     *  （env 未设 → WARN + 替换为空串；解析后整串为空 → 兜底 iast_&lt;pid&gt;）。
+     *  未配 / 空 → 默认 iast_&lt;pid&gt;（前缀避免 /tmp 下出现纯数字目录）。 */
+    private String instanceName;
 
     public boolean isArgs() {
         return args;
@@ -70,5 +74,13 @@ public class OutputConfig {
 
     public void setOutputDir(String outputDir) {
         this.outputDir = outputDir;
+    }
+
+    public String getInstanceName() {
+        return instanceName;
+    }
+
+    public void setInstanceName(String instanceName) {
+        this.instanceName = instanceName;
     }
 }

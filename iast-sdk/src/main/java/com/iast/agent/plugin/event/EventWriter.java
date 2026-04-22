@@ -20,7 +20,9 @@ public class EventWriter {
 
     private EventWriter() {
         String pid = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
-        this.eventsPath = "/tmp/iast-events-" + pid + ".jsonl";
+        // 默认布局：/tmp/iast_<pid>/iast.jsonl（前缀 iast_ 避免在 /tmp 下出现纯数字目录）。
+        // yaml 里配 outputDir / instanceName 会通过 setEventsPath 切走。
+        this.eventsPath = "/tmp/iast_" + pid + "/iast.jsonl";
     }
 
     public static EventWriter getInstance() {
@@ -77,6 +79,9 @@ public class EventWriter {
 
     private void openWriter() {
         try {
+            java.io.File f = new java.io.File(eventsPath);
+            java.io.File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
             FileOutputStream fos = new FileOutputStream(eventsPath, true);
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
             writer = new BufferedWriter(osw);

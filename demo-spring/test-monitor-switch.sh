@@ -16,6 +16,24 @@ fi
 CONFIG_YAML="$SCRIPT_DIR/iast-monitor.yaml"
 PID_FILE="/tmp/spring-demo-test.pid"
 DEMO_LOG="/tmp/spring-demo-test.log"
+# 测试专用输出根目录：每个 attach 用临时 yaml 把 outputDir 指到这里 + instanceName=test-<pid>
+# trap 清理；不污染 /tmp。
+TEST_OUT="/tmp/iast-monitor-switch-$$"
+mkdir -p "$TEST_OUT"
+
+# 基于主 yaml 派生一个临时 yaml，把 outputDir 改到测试目录、instanceName 设成 test-<pid>。
+# **临时 yaml 必须写到 $SCRIPT_DIR**：主 yaml 里 rulesDir/pluginsDir 是相对路径
+# （./rules.d、./plugins），按 yaml 文件所在目录解析——放 /tmp 会让它们去找 /tmp/rules.d。
+make_test_yaml() {
+    local pid="$1" out_yaml="$2"
+    awk -v outdir="$TEST_OUT" -v inst="test-$pid" '
+        /^  outputDir:/ { print "  outputDir: " outdir; print "  instanceName: " inst; next }
+        /^  instanceName:/ { next }   # 老 instanceName 删掉，避免重复
+        { print }
+    ' "$CONFIG_YAML" > "$out_yaml"
+}
+# 收集生成的临时 yaml，便于 trap 一并清理
+TEST_YAMLS=()
 
 cleanup() {
     echo "🧹 清理旧进程..."
@@ -28,6 +46,12 @@ cleanup() {
     pkill -f "demo-spring-1.0.0.jar" 2>/dev/null
     sleep 0.5
 }
+final_cleanup() {
+    cleanup
+    rm -rf "$TEST_OUT"
+    for y in "${TEST_YAMLS[@]}"; do rm -f "$y"; done
+}
+trap final_cleanup EXIT
 
 cleanup
 
@@ -65,11 +89,14 @@ triggerFileCheck() {
 echo "========================================"
 echo "1. 首次挂载Agent，开启监控..."
 echo "========================================"
-java -jar "$AGENT_JAR" $DEMO_PID config="$CONFIG_YAML"
+TEST_YAML="$SCRIPT_DIR/.iast-monitor-test-$DEMO_PID.yaml"
+TEST_YAMLS+=("$TEST_YAML")
+make_test_yaml "$DEMO_PID" "$TEST_YAML"
+java -jar "$AGENT_JAR" $DEMO_PID config="$TEST_YAML"
 sleep 5
 
-IAST_LOG="/tmp/iast-agent-$DEMO_PID.log"
-EVENT_LOG="/tmp/iast-events-$DEMO_PID.jsonl"
+IAST_LOG="$TEST_OUT/test-$DEMO_PID/iast.log"
+EVENT_LOG="$TEST_OUT/test-$DEMO_PID/iast.jsonl"
 # 统计"被拦截的方法调用数"：yaml 里 File/Files 的所有规则都走 CustomEventPlugin，
 # 产出 event_type=file.* 的 JSONL 事件，用它来衡量监控是否真在 hook。
 count_hits() {
@@ -196,7 +223,7 @@ echo "========================================"
 echo "========================================"
 echo "5. 测试 CustomEventPlugin JSONL 事件..."
 echo "========================================"
-EVENT_LOG="/tmp/iast-events-$DEMO_PID.jsonl"
+EVENT_LOG="$TEST_OUT/test-$DEMO_PID/iast.jsonl"
 curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
 sleep 1
 if [ ! -f "$EVENT_LOG" ]; then
@@ -299,13 +326,16 @@ if command -v jattach > /dev/null 2>&1; then
 fi
 
 # -DiastAttach=fallback 强制走 byte-buddy-agent；PATH 里也没有 jattach，双重保险
-PATH="$NO_JATTACH_PATH" java -DiastAttach=fallback -jar "$AGENT_JAR" $DEMO_PID2 config="$CONFIG_YAML"
+TEST_YAML2="$SCRIPT_DIR/.iast-monitor-test-$DEMO_PID2.yaml"
+TEST_YAMLS+=("$TEST_YAML2")
+make_test_yaml "$DEMO_PID2" "$TEST_YAML2"
+PATH="$NO_JATTACH_PATH" java -DiastAttach=fallback -jar "$AGENT_JAR" $DEMO_PID2 config="$TEST_YAML2"
 sleep 3
 cd $SCRIPT_DIR
 
 curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
 sleep 1
-EVENT_LOG2="/tmp/iast-events-$DEMO_PID2.jsonl"
+EVENT_LOG2="$TEST_OUT/test-$DEMO_PID2/iast.jsonl"
 LINE3=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG2" 2>/dev/null | tail -1)
 if [ -z "$LINE3" ]; then
     echo "❌ byte-buddy-agent 挂载后未产生事件"
@@ -340,13 +370,16 @@ if command -v jattach > /dev/null 2>&1; then
         fi
         sleep 1
     done
-    java -DiastAttach=jattach -jar "$AGENT_JAR" $DEMO_PID3 config="$CONFIG_YAML"
+    TEST_YAML3="$SCRIPT_DIR/.iast-monitor-test-$DEMO_PID3.yaml"
+    TEST_YAMLS+=("$TEST_YAML3")
+    make_test_yaml "$DEMO_PID3" "$TEST_YAML3"
+    java -DiastAttach=jattach -jar "$AGENT_JAR" $DEMO_PID3 config="$TEST_YAML3"
     sleep 3
     cd $SCRIPT_DIR
 
     curl -s "http://127.0.0.1:8080/api/list-dir?path=/tmp" > /dev/null
     sleep 1
-    EVENT_LOG3="/tmp/iast-events-$DEMO_PID3.jsonl"
+    EVENT_LOG3="$TEST_OUT/test-$DEMO_PID3/iast.jsonl"
     LINE4=$(grep '"id":"java.nio.file.Files.list"' "$EVENT_LOG3" 2>/dev/null | tail -1)
     if [ -z "$LINE4" ]; then
         echo "❌ jattach 模式挂载后未产生事件"

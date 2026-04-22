@@ -10,11 +10,19 @@ output:
   return: true               # 是否打印返回值
   stacktrace: true           # 是否打印调用栈
   stacktraceDepth: 8
-  # 输出目录：iast-agent-<pid>.log 和 iast-events-<pid>.jsonl 共用此目录，
-  # 文件名仍带 PID 后缀避免多实例串扰。相对路径按本 yaml 所在目录解析；
-  # 目录不存在会自动 mkdirs（失败则 WARN+保留默认 /tmp）。不配（默认）→ /tmp/。
+  # 输出根目录。最终文件落在 outputDir/<instanceName>/iast.{log,jsonl}
+  # 相对路径按本 yaml 所在目录解析；目录不存在会自动 mkdirs（失败则 WARN）。
+  # 不配（默认）→ /tmp。
   # outputDir: ./logs
-  # eventsPath: /tmp/iast-events.jsonl   # 可选全路径覆盖；优先级 > outputDir（仅作用 events）
+
+  # 实例标识：作为 outputDir 下的子目录名，把多 JVM 隔离从"文件名 pid 后缀"抬到"目录层"。
+  # 支持 ${VAR} 引环境变量（env 未设 → WARN + 替换空串；解析后整串为空 → 兜底 iast_<pid>）。
+  # 不配（默认）→ 用 iast_<pid>（前缀避免 /tmp 下出现纯数字目录）。
+  # instanceName: ${HOSTNAME}
+  # instanceName: ${POD_NAME}-${HOSTNAME}
+  # instanceName: prod-app1                # 字面量也行
+
+  # eventsPath: /tmp/iast-events.jsonl     # 可选全路径覆盖；优先级 > outputDir/instanceName（仅作用 events）
   logLevel: info             # debug|info|warn|error，默认 info；
                              # 排查"插件没动静 / 响应头丢失 / 监控开关切换异常"等问题时调成 debug，
                              # 也可以通过 CLI `loglevel debug` 运行时切换

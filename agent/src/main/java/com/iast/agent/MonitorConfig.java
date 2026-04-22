@@ -148,9 +148,15 @@ public class MonitorConfig {
             outputStacktrace = outputConfig.isStacktrace();
             stacktraceDepth = outputConfig.getStacktraceDepth();
 
-            // outputDir：log + jsonl 共用目录。先应用 outputDir 给两个文件设新路径；
-            // 之后如果 eventsPath 也配了（全路径覆盖），下面的 setEventsPath 会再次覆盖
-            // events 那条；log 这条仍走 outputDir。
+            // 路径布局：<outputDir>/<instanceName>/iast.{log,jsonl}
+            //   - outputDir 未配 → /tmp（与 LogWriter/EventWriter 默认一致）
+            //   - instanceName 未配 / 解析后空 → 兜底 iast_<pid>（多 JVM 默认隔离；
+            //                                       前缀 iast_ 避免在 outputDir 下出现纯数字目录）
+            //   - instanceName 支持 ${VAR} 引环境变量
+            // 始终运行（无任何配置时也跑），确保 yaml 解析后路径是统一布局。
+            String pid = java.lang.management.ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
+            String pidInst = "iast_" + pid;
+            String baseDir;
             String od = outputConfig.getOutputDir();
             if (od != null && !od.trim().isEmpty()) {
                 String resolved = od.trim();
@@ -158,22 +164,43 @@ public class MonitorConfig {
                     File cfgParent = new File(configFilePath).getAbsoluteFile().getParentFile();
                     if (cfgParent != null) resolved = new File(cfgParent, resolved).getAbsolutePath();
                 }
-                File dir = new File(resolved);
-                if (!dir.exists() && !dir.mkdirs()) {
-                    LogWriter.getInstance().warn("[IAST Agent] outputDir mkdir failed: " + resolved
-                            + " (keep default /tmp)");
-                } else {
-                    String pid = java.lang.management.ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
-                    LogWriter.getInstance().setLogPath(
-                            new File(dir, "iast-agent-" + pid + ".log").getAbsolutePath());
-                    com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(
-                            new File(dir, "iast-events-" + pid + ".jsonl").getAbsolutePath());
-                    LogWriter.getInstance().info("[IAST Agent] outputDir: " + resolved);
+                baseDir = resolved;
+            } else {
+                baseDir = "/tmp";
+            }
+
+            String inst = outputConfig.getInstanceName();
+            String resolvedInst;
+            if (inst == null || inst.trim().isEmpty()) {
+                resolvedInst = pidInst;
+            } else {
+                resolvedInst = expandEnvVars(inst.trim());
+                if (resolvedInst.isEmpty()) {
+                    LogWriter.getInstance().warn(
+                            "[IAST Agent] instanceName resolved to empty, fallback to: " + pidInst);
+                    resolvedInst = pidInst;
                 }
             }
 
+            File dir = new File(baseDir, resolvedInst);
+            if (!dir.exists() && !dir.mkdirs()) {
+                LogWriter.getInstance().warn("[IAST Agent] mkdir failed: "
+                        + dir.getAbsolutePath() + " (keep current path)");
+            } else {
+                LogWriter.getInstance().setLogPath(
+                        new File(dir, "iast.log").getAbsolutePath());
+                if (outputConfig.getEventsPath() == null || outputConfig.getEventsPath().isEmpty()) {
+                    com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(
+                            new File(dir, "iast.jsonl").getAbsolutePath());
+                }
+                String fromHint = (inst != null && !inst.equals(resolvedInst))
+                        ? ", from '" + inst + "'" : "";
+                LogWriter.getInstance().info("[IAST Agent] output dir: "
+                        + dir.getAbsolutePath() + " (instanceName=" + resolvedInst + fromHint + ")");
+            }
+
             if (outputConfig.getEventsPath() != null && !outputConfig.getEventsPath().isEmpty()) {
-                // 全路径 eventsPath 覆盖 outputDir 推算出来的 events 路径
+                // 全路径 eventsPath 覆盖 outputDir/instanceName 推算出来的 events 路径
                 com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(outputConfig.getEventsPath());
             }
             // 日志级别从 yaml 应用——本调用要早于"Loaded monitor rule"等后续 info 日志，
@@ -828,5 +855,33 @@ public class MonitorConfig {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    // --- 环境变量替换 ---
+
+    private static final java.util.regex.Pattern ENV_VAR_PATTERN =
+            java.util.regex.Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}");
+
+    /**
+     * 把字符串里 ${VAR} 形式的占位替换成对应环境变量值。
+     * env 不存在 → WARN + 替换为空串（让调用方决定要不要兜底）。
+     * 不支持 ${VAR:-default} 等扩展语法。
+     */
+    private static String expandEnvVars(String s) {
+        if (s == null || s.isEmpty()) return s;
+        java.util.regex.Matcher m = ENV_VAR_PATTERN.matcher(s);
+        StringBuffer sb = new StringBuffer(s.length() + 32);
+        while (m.find()) {
+            String name = m.group(1);
+            String val = System.getenv(name);
+            if (val == null) {
+                LogWriter.getInstance().warn(
+                        "[IAST Agent] env var not set: " + name + " (substituting empty)");
+                val = "";
+            }
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(val));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 }
