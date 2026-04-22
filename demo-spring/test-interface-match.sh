@@ -48,7 +48,17 @@ write_config() {
     # $1 = true | false ; $2 = premain delay (ms, defaults to 0 for fast tests)
     local include_future="$1"
     local delay_ms="${2:-0}"
+    local rules_dir="$TMP_DIR/rules-${include_future}-d${delay_ms}"
     local path="$TMP_DIR/config-${include_future}-d${delay_ms}.yaml"
+    mkdir -p "$rules_dir"
+    cat > "$rules_dir/servlet-trace.yaml" <<'EOF'
+id: test.trace.req-id
+className: jakarta.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: RequestIdPlugin
+EOF
     cat > "$path" <<EOF
 output:
   args: true
@@ -60,12 +70,7 @@ monitor:
   default:
     includeFutureClasses: ${include_future}
     premainDelayMs: ${delay_ms}
-  rules:
-    - className: jakarta.servlet.Servlet
-      matchType: interface
-      methods:
-        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: RequestIdPlugin
+    rulesDir: ${rules_dir}
 EOF
     echo "$path"
 }
@@ -250,7 +255,33 @@ run_delay_case
 
 write_body_config() {
     local hard_limit="${1:-10485760}"
+    local rules_dir="$TMP_DIR/rules-body-h${hard_limit}"
     local path="$TMP_DIR/config-body-h${hard_limit}.yaml"
+    mkdir -p "$rules_dir"
+
+    # RequestIdPlugin 挂在 Servlet 接口规则上——和下面 HttpServlet exact+wrap 的规则
+    # 不共享 className，advice 栈各自独立，两者都能触发。
+    cat > "$rules_dir/trace.yaml" <<'EOF'
+id: test.body.trace
+className: jakarta.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: RequestIdPlugin
+EOF
+    # ServletBodyPlugin：缓冲 body + 打日志
+    cat > "$rules_dir/body.yaml" <<EOF
+id: test.body.wrap
+className: jakarta.servlet.http.HttpServlet
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: ServletBodyPlugin
+wrapServletRequest: true
+pluginConfig:
+  maxLogBytes: 8192
+  hardLimitBytes: ${hard_limit}
+  charset: UTF-8
+EOF
     cat > "$path" <<EOF
 output:
   args: true
@@ -261,25 +292,7 @@ monitor:
   default:
     includeFutureClasses: true
     premainDelayMs: 0
-  rules:
-    # RequestIdPlugin 挂在 Servlet 接口规则上——和下面 HttpServlet exact+wrap 的规则
-    # 不共享 className，advice 栈各自独立，两者都能触发。
-    - className: jakarta.servlet.Servlet
-      matchType: interface
-      methods:
-        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: RequestIdPlugin
-
-    # ServletBodyPlugin：缓冲 body + 打日志
-    - className: jakarta.servlet.http.HttpServlet
-      methods:
-        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: ServletBodyPlugin
-      wrapServletRequest: true
-      pluginConfig:
-        maxLogBytes: 8192
-        hardLimitBytes: ${hard_limit}
-        charset: UTF-8
+    rulesDir: ${rules_dir}
 EOF
     echo "$path"
 }
@@ -312,11 +325,11 @@ run_body_case() {
 
     local iast_log="/tmp/iast-agent-${DEMO_PID}.log"
 
-    # D.0：上游带 X-Request-Id 头时 RequestIdPlugin 应直接复用，不生成新 UUID
-    echo "  ---------- D.0 上游 X-Request-Id 直通 ----------"
+    # D.0：上游带 X-Seeker-Request-Id 头时 RequestIdPlugin 应直接复用，不生成新 UUID
+    echo "  ---------- D.0 上游 X-Seeker-Request-Id 直通 ----------"
     local incoming_id="upstream-id-abc123"
     curl -sS -XPOST -H 'Content-Type: application/json' \
-        -H "X-Request-Id: $incoming_id" \
+        -H "X-Seeker-Request-Id: $incoming_id" \
         -d '{"probe":"id"}' http://127.0.0.1:8080/api/echo-body -o /dev/null -w ""
     sleep 1
     if ! grep -F "[requestId=${incoming_id}]" "$iast_log" >/dev/null; then
@@ -331,7 +344,7 @@ run_body_case() {
         echo "❌ D.0 RequestIdPlugin 没以上游 id 记录 Request Started"
         return 1
     fi
-    echo "    ✓ 复用上游 X-Request-Id: $incoming_id"
+    echo "    ✓ 复用上游 X-Seeker-Request-Id: $incoming_id"
 
     # D.1：正常 JSON POST —— 业务响应必须 echo 回原样，日志含 body
     echo "  ---------- D.1 正常 JSON POST ----------"

@@ -10,8 +10,9 @@ import java.util.UUID;
  * 拦截Servlet请求，生成UUID作为requestId，记录日志并设置响应头
  */
 public class RequestIdPlugin implements IastPlugin {
-    /** 请求和响应头都用同一个名字；上游传入 / 响应回写都围绕这个 key */
-    private static final String HEADER_NAME = "X-Request-Id";
+    /** 请求和响应头都用同一个名字；上游传入 / 响应回写都围绕这个 key。
+     *  和 x-seeker-forward-* / xseeker 同前缀，避免和业务自己的 X-Request-Id 撞名。 */
+    private static final String HEADER_NAME = "X-Seeker-Request-Id";
     private static final String INCOMING_HEADER = HEADER_NAME;
 
     // ===== 链路 attr 键名（HttpForwardPlugin 出口侧会读这几个） =====
@@ -54,7 +55,7 @@ public class RequestIdPlugin implements IastPlugin {
         String requestId = RequestIdHolder.get();
         boolean newId = (requestId == null);
         if (newId) {
-            // 优先采用调用方已经带进来的 X-Request-Id 头；这样跨服务链路的 id 能直接串起来，
+            // 优先采用调用方已经带进来的 X-Seeker-Request-Id 头；这样跨服务链路的 id 能直接串起来，
             // 前端可以用自己种的 id 追溯。上游没传再 fallback 到本地 UUID。
             Object req = (context.getArgs() != null && context.getArgs().length > 0) ? context.getArgs()[0] : null;
             String incoming = extractIncomingId(req);
@@ -64,7 +65,7 @@ public class RequestIdPlugin implements IastPlugin {
 
         context.setRequestId(requestId);
 
-        // 强制保证响应头一定带 X-Request-Id：每次 enter 都尝试一次，用 setHeader（替换）而不是
+        // 强制保证响应头一定带 X-Seeker-Request-Id：每次 enter 都尝试一次，用 setHeader（替换）而不是
         // addHeader（追加），这样嵌套调用多次尝试也不会产生重复头；已经有同值则是幂等的。
         // containsHeader 先探查：如果上游过滤器已经设过（相同或不同值），就不再覆盖，尊重既有值。
         int argsLen = context.getArgs() == null ? 0 : context.getArgs().length;
@@ -136,11 +137,11 @@ public class RequestIdPlugin implements IastPlugin {
     }
 
     /**
-     * 幂等地把 X-Request-Id 写到响应上。
+     * 幂等地把 X-Seeker-Request-Id 写到响应上。
      * <ul>
-     *   <li>response 已有 X-Request-Id（任意值）→ 不覆盖，尊重上游/业务已有设置</li>
+     *   <li>response 已有 X-Seeker-Request-Id（任意值）→ 不覆盖，尊重上游/业务已有设置</li>
      *   <li>否则调 setHeader（注意不是 addHeader）—— setHeader 会替换同名值，嵌套调用多次
-     *       也只会留一份头，不会出现多个 X-Request-Id 行</li>
+     *       也只会留一份头，不会出现多个 X-Seeker-Request-Id 行</li>
      *   <li>setHeader 不存在时（极少见的 response 包装）退回 addHeader，总比没有好</li>
      * </ul>
      */
@@ -239,7 +240,7 @@ public class RequestIdPlugin implements IastPlugin {
         return "RequestIdPlugin";
     }
 
-    /** 反射调 request.getHeader(name)；上游 X-Request-Id 复用、链路 attr 采集都走它。 */
+    /** 反射调 request.getHeader(name)；上游 X-Seeker-Request-Id 复用、链路 attr 采集都走它。 */
     private static String extractIncomingId(Object req) {
         return extractStringHeader(req, INCOMING_HEADER);
     }

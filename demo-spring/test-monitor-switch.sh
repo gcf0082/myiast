@@ -151,14 +151,14 @@ echo "4. 测试请求ID跟踪功能..."
 echo "========================================"
 echo "📝 发送测试请求，检查响应头..."
 RESPONSE=$(curl -i -s "http://127.0.0.1:8080/api/check-file?path=/etc/passwd")
-REQUEST_ID=$(echo "$RESPONSE" | grep -i "X-Request-Id:" | awk '{print $2}' | tr -d '\r')
+REQUEST_ID=$(echo "$RESPONSE" | grep -i "X-Seeker-Request-Id:" | awk '{print $2}' | tr -d '\r')
 
 if [ -z "$REQUEST_ID" ]; then
-    echo "❌ 响应头中未发现X-Request-Id字段"
+    echo "❌ 响应头中未发现X-Seeker-Request-Id字段"
     cleanup
     exit 1
 else
-    echo "✅ 响应头X-Request-Id: $REQUEST_ID"
+    echo "✅ 响应头X-Seeker-Request-Id: $REQUEST_ID"
 fi
 
 sleep 1

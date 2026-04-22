@@ -159,7 +159,7 @@ pluginConfig: {...}
 | 插件 | 作用 | 按 className 筛规则？ |
 |-----|------|---------------------|
 | CustomEventPlugin | 按 YAML 表达式提取参数 / 渲染模板 / 写 JSONL 结构化事件 | **是**（只在 exact 规则下稳定工作） |
-| RequestIdPlugin | 为每个请求生成 / 复用 `X-Request-Id`，挂到 ThreadLocal + 响应头；并采集 `client_ip` / `forward_req_id` / `forward_ip` / `xseeker` 到 IastContext 供出口侧透传用 | 否（任何分派进来都跑） |
+| RequestIdPlugin | 为每个请求生成 / 复用 `X-Seeker-Request-Id`，挂到 ThreadLocal + 响应头；并采集 `client_ip` / `forward_req_id` / `forward_ip` / `xseeker` 到 IastContext 供出口侧透传用 | 否（任何分派进来都跑） |
 | ServletBodyPlugin | 改写 `service` 入参为缓冲 wrapper，记录请求 body | 否（仅对显式标 `wrapServletRequest: true` 的规则生效） |
 | HttpForwardPlugin | 出口链路头透传：钩到 `HttpRest.sendHttpRequest`，从 IastContext 读上下文，反射调 `args[2].putHttpContextHeader(String, String)` 把 `x-seeker-forward-req-id` / `x-seeker-forward-ip` / `xseeker` 注入到下游请求；目标类不在 classpath 时静默不命中 | 否（无 pluginConfig，行为对齐 HttpRest 固定签名；适配其他客户端时直接新写一个插件） |
 | LogPlugin | 人读日志（调用、参数、返回值、栈） | 否；注：默认配置样例里已不用它，改推荐 CustomEventPlugin 走 JSONL |
@@ -393,12 +393,12 @@ monitor:
 每行一个 JSON 对象：
 
 ```json
-{"ts":"2026-04-17T09:12:34.567Z","id":"java.nio.file.Files.list","event":"file list | /tmp","event_type":"file.list","event_level":"info","phase":"enter","requestId":"abc...","x-request-id":"abc...","forward_req_id":"upstream-A,upstream-B","callId":42,"className":"java.nio.file.Files","methodName":"list","thread":"http-nio-8080-exec-1","params":{"file_path":"/tmp"}}
+{"ts":"2026-04-17T09:12:34.567Z","id":"java.nio.file.Files.list","event":"file list | /tmp","event_type":"file.list","event_level":"info","phase":"enter","requestId":"abc...","x-seeker-request-id":"abc...","forward_req_id":"upstream-A,upstream-B","callId":42,"className":"java.nio.file.Files","methodName":"list","thread":"http-nio-8080-exec-1","params":{"file_path":"/tmp"}}
 ```
 
 链路相关字段：
 - `requestId` —— 本机请求 ID，由 `RequestIdPlugin` 生成 / 复用
-- `x-request-id` —— 与 `requestId` 同值，HTTP 头形式的字段名（方便消费侧按 header 名 grep）
+- `x-seeker-request-id` —— 与 `requestId` 同值，HTTP 头形式的字段名（方便消费侧按 header 名 grep；与响应头 `X-Seeker-Request-Id` 对齐）
 - `forward_req_id` —— 上游 `x-seeker-forward-req-id` 链；本机不在链路里时为 `null`，便于消费侧字段集稳定
 
 配合 `jq` / Filebeat / Vector 消费：
@@ -421,9 +421,9 @@ debug 模式打开后，下面这些"静默问题"会冒出来：
 
 | 静默症状 | debug 下能看到什么 |
 |---------|-------------------|
-| 响应头 `X-Request-Id` 没出现 | `[WARN] [IAST RequestId] addHeader threw on <responseClass>: ...`（response 包装类不支持 addHeader 或方法抛异常）；或 `[DEBUG] [IAST RequestId] skip addHeader: nested call (depth=N)` 表示当前调用是嵌套层不该加头 |
+| 响应头 `X-Seeker-Request-Id` 没出现 | `[WARN] [IAST RequestId] addHeader threw on <responseClass>: ...`（response 包装类不支持 addHeader 或方法抛异常）；或 `[DEBUG] [IAST RequestId] skip addHeader: nested call (depth=N)` 表示当前调用是嵌套层不该加头 |
 | 配了 yaml 规则但插件没动静 | `[DEBUG] [IAST Plugin] dispatch miss: plugin 'XXX' not registered (...)`，通常是插件名拼错 / 外部插件没扫到 |
-| 上游 `X-Request-Id` 头没被复用 | `[DEBUG] [IAST RequestId] req has no getHeader (class=...)`，说明 advice 拿到的 args[0] 不是 HttpServletRequest |
+| 上游 `X-Seeker-Request-Id` 头没被复用 | `[DEBUG] [IAST RequestId] req has no getHeader (class=...)`，说明 advice 拿到的 args[0] 不是 HttpServletRequest |
 | stop/start 切换后行为不对 | `[INFO] [IAST Agent] MONITOR_ENABLED true -> false (stop)` / `... -> true (start)` 标定切换时点；插件 enter/exit 是否成对完成可看 `[IAST RequestId] === Request Started ===` / `Request Completed` 配对 |
 
 debug 级别会显著增加日志量（每个被监控请求多 ~3 行）；线上场景建议只在排查期临时打开，结束 `loglevel info`。
