@@ -1,5 +1,6 @@
 # ============================================
-# demo-spring 专属 IAST 监控配置
+# demo-spring 主配置（output + monitor.default）
+# 规则在 ./rules.d/ 下，每个 yaml 文件 multi-doc（用 --- 分割）
 # 用于 test-monitor-switch.sh（attach 模式）和 run-premain.sh（premain 模式）
 # ============================================
 
@@ -23,120 +24,6 @@ monitor:
     # 外部插件目录。**相对路径按本 yaml 文件所在目录解析**（而不是 JVM 的 CWD），
     # 所以 demo/plugins/ 下放任何插件 jar，无论从哪个目录启动都能找到。
     pluginsDir: ./plugins
-  rules:
-    # Step 1-3 使用：CustomEventPlugin 基础拦截（File 的创建 / 存在性 / 绝对路径）
-    - className: java.io.File
-      methods:
-        - "<init>#*"
-        - "exists#()Z"
-        - "getAbsolutePath#()Ljava/lang/String;"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        my_params:
-          method: "methodName"
-          arg0: "params[0]"
-        event: "java.io.File.{method}({arg0})"
-        event_type: file.io
-
-    # 反射调用也能拦截：/api/reflect-exists 通过 Method.invoke 调用 Files.exists
-    - className: java.nio.file.Files
-      methods:
-        - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        my_params:
-          path: "params[0].toString()"
-        event: "Files.exists({path})"
-        event_type: file.exists
-
-    # Step 4 使用：Servlet 请求 ID 跟踪
-    - className: jakarta.servlet.http.HttpServlet
-      methods:
-        - "service#*"
-      plugin: RequestIdPlugin
-
-    # 接口匹配示例 A：javax.servlet.Servlet（Servlet 4 及之前的命名空间）
-    # demo-spring 用的是 Spring Boot 3 + jakarta，javax.servlet.Servlet 不会被加载 → 此条永远不命中；
-    # 留在这里作为"监控 javax.servlet.Servlet 接口"的标准写法，同样的规则放进 Tomcat 9/Spring Boot 2 的应用即可生效。
-    - className: javax.servlet.Servlet
-      matchType: interface
-      methods:
-        - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        my_params:
-          impl: "target.getClass().getName()"
-        event: "javax Servlet.service | {impl}"
-        event_type: servlet.service.javax
-
-    # 接口匹配示例 B：jakarta.servlet.Servlet（demo-spring 实际使用的命名空间）
-    - className: jakarta.servlet.Servlet
-      matchType: interface
-      methods:
-        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        my_params:
-          impl: "target.getClass().getName()"
-        event: "jakarta Servlet.service | {impl}"
-        event_type: servlet.service.jakarta
-
-    # ServletBodyPlugin：打印请求 body。
-    # wrapServletRequest=true 触发 ServletBodyAdvice，运行期把 arg[0] 换成缓冲 wrapper，
-    # 业务后续 getInputStream()/getReader() 都从缓冲流读，不影响正常反序列化。
-    - className: jakarta.servlet.http.HttpServlet
-      methods:
-        - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
-      plugin: ServletBodyPlugin
-      wrapServletRequest: true
-      pluginConfig:
-        maxLogBytes: 8192
-        hardLimitBytes: 10485760
-        textContentTypes:
-          - application/json
-          - application/xml
-          - application/x-www-form-urlencoded
-          - text/
-        charset: UTF-8
-
-    # Step 5a 使用：CustomEventPlugin，演示 params[0] 取参。
-    # （注：同一方法只能挂一条 CustomEventPlugin 规则——其内部 key 是 className+methodName，
-    #       多条会彼此覆盖；若想"一个方法多个处理逻辑"，需要不同 plugin 类型）
-    - className: java.nio.file.Files
-      methods:
-        - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        id: java.nio.file.Files.list
-        my_params:
-          file_path: "params[0].toString()"
-        event: "file list | {file_path}"
-        event_type: file.list
-        event_level: info
-
-    # Step 5b 使用：CustomEventPlugin，演示 target / params[N] / return / 链式方法调用
-    - className: com.iast.demo.FileCheckController
-      methods:
-        - "repeatMsg#(Ljava/lang/String;I)Ljava/lang/String;"
-      plugin: CustomEventPlugin
-      pluginConfig:
-        id: com.iast.demo.FileCheckController.repeatMsg
-        my_params:
-          target_class: "target.getClass().getSimpleName()"
-          msg: "params[0]"
-          times: "params[1].toString()"
-          combined: "return"
-        event: "repeatMsg | target={target_class} msg={msg} times={times} -> {combined}"
-        event_type: demo.repeat
-        event_level: info
-        on: [exit]
-
-    # 外部插件样例：HelloPlugin（iast-plugin-demo.jar 放在同目录的 plugins/ 下）
-    # 挂到 /api/hello 接口，访问一次就能在 /tmp/iast-agent-<pid>.log 看到 [HelloPlugin]
-    # 日志行，证明外部 plugin 加载 + ServiceLoader 发现 + 规则分派三段链路都通
-    - className: com.iast.demo.FileCheckController
-      methods:
-        - "hello#()Ljava/lang/String;"
-      plugin: HelloPlugin
-      pluginConfig:
-        prefix: "HelloPlugin"
+    # 规则目录：扫该目录下所有 *.yaml/*.yml，每个文件 multi-doc。
+    # 相对路径同样按本 yaml 所在目录解析。
+    rulesDir: ./rules.d

@@ -35,6 +35,10 @@ public class MonitorConfig {
     private static volatile long premainDelayMs = 60_000L;
     // 外部插件目录（存放 plugin jar）。空字符串 = 不加载外部插件
     private static volatile String pluginsDir = "";
+    // 规则目录（每个 yaml 文件 multi-doc 规则）。空字符串 = 不从目录加载
+    private static volatile String rulesDir = "";
+    // internal className -> 该类下所有规则的 id 列表（id 缺省时该 rule 不计入；CLI rules 命令展示用）
+    private static final Map<String, List<String>> classRuleIds = new HashMap<>();
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
     private static final String DEFAULT_PROPERTIES_CONFIG_PATH = "iast-monitor.properties";
     private static String configFilePath = DEFAULT_YAML_CONFIG_PATH;
@@ -170,71 +174,164 @@ public class MonitorConfig {
             if (!pluginsDir.isEmpty()) {
                 LogWriter.getInstance().info("[IAST Agent] pluginsDir: " + pluginsDir);
             }
-        }
 
-        // 解析监控规则
-        if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getRules() != null) {
-            for (MonitorRuleConfig rule : rootConfig.getMonitor().getRules()) {
-                String className = rule.getClassName();
-                if (className == null || className.isEmpty() || rule.getMethods() == null || rule.getMethods().isEmpty()) {
-                    continue;
-                }
-                // 方法规则转为逗号分隔字符串，复用原有解析逻辑
-                String methodRuleStr = String.join(",", rule.getMethods());
-                List<MethodRule> methods = parseMethodRules(methodRuleStr);
-                if (!methods.isEmpty()) {
-                    String internalClassName = className.replace('.', '/');
-                    // 同一个类可能有多条规则，合并方法列表（去重）
-                    List<MethodRule> existing = monitorRules.computeIfAbsent(internalClassName, k -> new ArrayList<>());
-                    for (MethodRule m : methods) {
-                        boolean dup = false;
-                        for (MethodRule e : existing) {
-                            if (e.getMethodName().equals(m.getMethodName())
-                                    && e.getDescriptor().equals(m.getDescriptor())) {
-                                dup = true;
-                                break;
-                            }
-                        }
-                        if (!dup) existing.add(m);
-                    }
-
-                    // 记录该类的 matchType（"exact"/"interface"）。同一个 className 多条规则冲突时以先声明的为准并 warn
-                    String ruleMatchType = normalizeMatchType(rule.getMatchType());
-                    String existingMatchType = classMatchType.get(internalClassName);
-                    if (existingMatchType == null) {
-                        classMatchType.put(internalClassName, ruleMatchType);
-                    } else if (!existingMatchType.equals(ruleMatchType)) {
-                        LogWriter.getInstance().info("[IAST Agent] Warning: conflicting matchType for " + className
-                                + " (existing=" + existingMatchType + ", new=" + ruleMatchType + "), keeping existing");
-                    }
-
-                    // wrapServletRequest 只要有一条 rule 声明为 true，本 className 所有规则都走包装路径
-                    if (rule.isWrapServletRequest()) {
-                        classWrapServletRequest.put(internalClassName, Boolean.TRUE);
-                    }
-
-                    // 存储插件名称，默认使用LogPlugin；同一个类可以挂多个插件，按YAML声明顺序排列
-                    String pluginName = rule.getPlugin();
-                    if (pluginName == null || pluginName.isEmpty()) {
-                        pluginName = "LogPlugin";
-                    }
-                    List<String> pluginList = classPluginMap.computeIfAbsent(internalClassName, k -> new ArrayList<>());
-                    if (!pluginList.contains(pluginName)) {
-                        pluginList.add(pluginName);
-                    }
-
-                    // 聚合该规则的pluginConfig，附带className/methods，后续传给插件init()
-                    if (rule.getPluginConfig() != null && !rule.getPluginConfig().isEmpty()) {
-                        Map<String, Object> block = new HashMap<>(rule.getPluginConfig());
-                        block.putIfAbsent("className", className);
-                        block.putIfAbsent("methods", rule.getMethods());
-                        pluginConfigs.computeIfAbsent(pluginName, k -> new ArrayList<>()).add(block);
-                    }
-
-                    LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + className + " -> " + methods + " (plugin: " + pluginName + ")");
+            // rulesDir：和 pluginsDir 同一套相对路径解析
+            String rd = defCfg.getRulesDir();
+            rulesDir = rd == null ? "" : rd.trim();
+            if (!rulesDir.isEmpty() && !new File(rulesDir).isAbsolute()) {
+                File cfgParent = new File(configFilePath).getAbsoluteFile().getParentFile();
+                if (cfgParent != null) {
+                    rulesDir = new File(cfgParent, rulesDir).getAbsolutePath();
                 }
             }
+            if (!rulesDir.isEmpty()) {
+                LogWriter.getInstance().info("[IAST Agent] rulesDir: " + rulesDir);
+            }
         }
+
+        // inline monitor.rules: 已废弃。检测到老 yaml 仍有该节就 WARN，但不解析。
+        if (rootConfig.getMonitor() != null && rootConfig.getMonitor().getRules() != null
+                && !rootConfig.getMonitor().getRules().isEmpty()) {
+            LogWriter.getInstance().warn("[IAST Agent] inline 'monitor.rules:' is no longer supported "
+                    + "(found " + rootConfig.getMonitor().getRules().size() + " rule(s)); "
+                    + "move them to monitor.default.rulesDir directory (one rule per yaml doc, multi-doc with '---')");
+        }
+
+        // 从 rulesDir 加载所有规则
+        if (!rulesDir.isEmpty()) {
+            loadRulesDir(rulesDir);
+        }
+    }
+
+    /**
+     * 扫一个目录，加载所有 *.yaml/*.yml 里的规则（multi-doc，用 --- 分割每条规则）。
+     * 文件按文件名字典序处理；某个文件 IO/解析失败会 WARN+继续。
+     */
+    private static void loadRulesDir(String absDirPath) {
+        File dir = new File(absDirPath);
+        if (!dir.exists()) {
+            LogWriter.getInstance().warn("[IAST Agent] rulesDir does not exist: " + absDirPath);
+            return;
+        }
+        if (!dir.isDirectory()) {
+            LogWriter.getInstance().warn("[IAST Agent] rulesDir is not a directory: " + absDirPath);
+            return;
+        }
+        File[] files = dir.listFiles((d, name) -> {
+            String low = name.toLowerCase();
+            return low.endsWith(".yaml") || low.endsWith(".yml");
+        });
+        if (files == null || files.length == 0) {
+            LogWriter.getInstance().info("[IAST Agent] rulesDir is empty (no *.yaml/*.yml): " + absDirPath);
+            return;
+        }
+        java.util.Arrays.sort(files, (a, b) -> a.getName().compareTo(b.getName()));
+        for (File f : files) {
+            int loaded = 0;
+            try (InputStream in = new FileInputStream(f)) {
+                // 用 typed Constructor —— 关键：避免 SnakeYAML 把 `on:`/`yes:`/`no:` 这类 YAML 1.1 关键字
+                // 在 Map key 位置自动 resolve 成 Boolean。typed 路径下 pluginConfig 的 key 保持 String。
+                Yaml y = new Yaml(new org.yaml.snakeyaml.constructor.Constructor(
+                        MonitorRuleConfig.class, new org.yaml.snakeyaml.LoaderOptions()));
+                for (Object doc : y.loadAll(in)) {
+                    if (doc == null) continue;  // 空 doc（典型为文件头/尾的空 ---）
+                    if (!(doc instanceof MonitorRuleConfig)) {
+                        LogWriter.getInstance().warn("[IAST Agent] rule doc in " + f.getName()
+                                + " is not a rule (got " + doc.getClass().getSimpleName() + "); skip");
+                        continue;
+                    }
+                    MonitorRuleConfig rule = (MonitorRuleConfig) doc;
+                    if (rule.getClassName() == null || rule.getClassName().isEmpty()
+                            || rule.getMethods() == null || rule.getMethods().isEmpty()) {
+                        LogWriter.getInstance().warn("[IAST Agent] rule [id=" + rule.getId() + "] in "
+                                + f.getName() + " missing required fields (className/methods); skip");
+                        continue;
+                    }
+                    applyRule(rule, f.getName());
+                    loaded++;
+                }
+            } catch (Exception e) {
+                LogWriter.getInstance().warn("[IAST Agent] failed to load rules from " + f.getName()
+                        + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                continue;
+            }
+            LogWriter.getInstance().info("[IAST Agent] Loaded " + loaded + " rule(s) from " + f.getName());
+        }
+    }
+
+    /**
+     * 把一条 rule 合到全局状态里（monitorRules / classPluginMap / classMatchType /
+     * classWrapServletRequest / pluginConfigs / classRuleIds）。所有规则源（inline 已废弃，
+     * 当前只剩 rulesDir）共用本路径，保证语义一致。
+     */
+    private static void applyRule(MonitorRuleConfig rule, String origin) {
+        String className = rule.getClassName();
+        String methodRuleStr = String.join(",", rule.getMethods());
+        List<MethodRule> methods = parseMethodRules(methodRuleStr);
+        if (methods.isEmpty()) {
+            LogWriter.getInstance().warn("[IAST Agent] rule [id=" + rule.getId() + "] in " + origin
+                    + " has no parseable methods; skip");
+            return;
+        }
+        String internalClassName = className.replace('.', '/');
+
+        // 同一个类多条规则，合并方法列表（去重）
+        List<MethodRule> existing = monitorRules.computeIfAbsent(internalClassName, k -> new ArrayList<>());
+        for (MethodRule m : methods) {
+            boolean dup = false;
+            for (MethodRule e : existing) {
+                if (e.getMethodName().equals(m.getMethodName())
+                        && e.getDescriptor().equals(m.getDescriptor())) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) existing.add(m);
+        }
+
+        // 记录 matchType（先声明胜出 + warn 冲突）
+        String ruleMatchType = normalizeMatchType(rule.getMatchType());
+        String existingMatchType = classMatchType.get(internalClassName);
+        if (existingMatchType == null) {
+            classMatchType.put(internalClassName, ruleMatchType);
+        } else if (!existingMatchType.equals(ruleMatchType)) {
+            LogWriter.getInstance().warn("[IAST Agent] conflicting matchType for " + className
+                    + " (existing=" + existingMatchType + ", new=" + ruleMatchType + " from " + origin + "), keeping existing");
+        }
+
+        // wrapServletRequest 任一为 true → 整个 className 走包装
+        if (rule.isWrapServletRequest()) {
+            classWrapServletRequest.put(internalClassName, Boolean.TRUE);
+        }
+
+        // 插件名（缺省 LogPlugin），按声明顺序累加
+        String pluginName = rule.getPlugin();
+        if (pluginName == null || pluginName.isEmpty()) {
+            pluginName = "LogPlugin";
+        }
+        List<String> pluginList = classPluginMap.computeIfAbsent(internalClassName, k -> new ArrayList<>());
+        if (!pluginList.contains(pluginName)) {
+            pluginList.add(pluginName);
+        }
+
+        // pluginConfig 块（附带 className/methods，给插件 init 用）
+        if (rule.getPluginConfig() != null && !rule.getPluginConfig().isEmpty()) {
+            Map<String, Object> block = new HashMap<>(rule.getPluginConfig());
+            block.putIfAbsent("className", className);
+            block.putIfAbsent("methods", rule.getMethods());
+            if (rule.getId() != null) block.putIfAbsent("ruleId", rule.getId());
+            pluginConfigs.computeIfAbsent(pluginName, k -> new ArrayList<>()).add(block);
+        }
+
+        // id（可选）记到 classRuleIds，给 CLI / 日志展示
+        if (rule.getId() != null && !rule.getId().isEmpty()) {
+            List<String> ids = classRuleIds.computeIfAbsent(internalClassName, k -> new ArrayList<>());
+            if (!ids.contains(rule.getId())) ids.add(rule.getId());
+        }
+
+        String idTag = rule.getId() == null ? "" : "[id=" + rule.getId() + "] ";
+        LogWriter.getInstance().info("[IAST Agent] Loaded monitor rule: " + idTag
+                + className + " -> " + methods + " (plugin: " + pluginName + ", from: " + origin + ")");
     }
 
     /**
@@ -392,6 +489,13 @@ public class MonitorConfig {
      */
     public static boolean isWrapServletRequest(String internalClassName) {
         return classWrapServletRequest.getOrDefault(internalClassName, Boolean.FALSE);
+    }
+
+    /**
+     * 该 className 上配的所有规则 id（缺省 id 的不计入）。给 CLI rules 命令展示用。
+     */
+    public static List<String> getRuleIds(String internalClassName) {
+        return classRuleIds.getOrDefault(internalClassName, java.util.Collections.emptyList());
     }
 
     /**

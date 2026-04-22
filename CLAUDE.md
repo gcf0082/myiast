@@ -126,6 +126,7 @@ CLI 拆在两个模块。**Agent 侧代码**（`agent/src/main/java/com/iast/age
 - **`IastAgent.startAgent` 的 init 步骤顺序别乱动** —— `MonitorConfig.init` 必须在 `initPlugins()` 之前，因为 `PluginManager.registerPlugin` 要读 `MonitorConfig.getPluginConfigs()`；插件 init 必须在 `buildAndInstall()` 之前，因为 AgentBuilder transformer 会调已注册的插件。
 - **`includeFutureClasses=false` + premain 模式** 由 `premainDelayMs` 延迟兜底：已加载类快照在 install 时刻取，不是 JVM 启动时刻取，所以 Spring 的 `DispatcherServlet`（应用启动时加载）只要在延迟到期前加载完了就会被纳入。
 - **新功能只用 YAML** —— `.properties` 格式仍然能加载，但样例里不再展示；新功能仅 YAML。
+- **规则放规则目录，不再 inline** —— 主 yaml 只有 `output` 和 `monitor.default`；规则全部放 `monitor.default.rulesDir` 指向的目录，每个 yaml 文件 multi-doc（`---` 分割）、每条 rule 可加 `id:` 可读标签。inline `monitor.rules:` 检测到只 WARN、不解析。loader 用 SnakeYAML typed `Constructor(MonitorRuleConfig.class) + loadAll`，刻意避免 YAML 1.1 把 `on:/yes:/no:` 这类 pluginConfig key 误识别成 Boolean。
 - **日志级别** —— 全局四档 `debug`/`info`(默认)/`warn`/`error`，由 `output.logLevel` 控制；CLI `loglevel <level>` 命令可运行时切换。`LogWriter` 单例存级别为 volatile int，比较开销可忽略。新插件代码请尽量用 `lw.isDebugEnabled()` 包住 debug 路径上的字符串拼接（hot path 上即使被 filter 掉也不要付出拼接成本）。`addHeader` 这类"对业务功能不可见但插件承诺要做"的失败一律走 `warn` 而不是吞掉——`RequestIdPlugin` 早期版本因为吞掉过 `addHeader` 异常导致响应头丢失没人发现。
 
 ## 发布流程

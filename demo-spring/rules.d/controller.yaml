@@ -1,0 +1,29 @@
+# Step 5b 使用：CustomEventPlugin 演示 target / params[N] / return / 链式方法调用
+id: demo.controller.repeat-msg
+className: com.iast.demo.FileCheckController
+methods:
+  - "repeatMsg#(Ljava/lang/String;I)Ljava/lang/String;"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    target_class: "target.getClass().getSimpleName()"
+    msg: "params[0]"
+    times: "params[1].toString()"
+    combined: "return"
+  event: "repeatMsg | target={target_class} msg={msg} times={times} -> {combined}"
+  event_type: demo.repeat
+  event_level: info
+  on: [exit]
+
+---
+
+# 外部插件样例：HelloPlugin（iast-plugin-demo.jar 放在同目录的 plugins/ 下）
+# 挂到 /api/hello 接口，访问一次就能在 /tmp/iast-agent-<pid>.log 看到 [HelloPlugin] 日志行，
+# 证明外部 plugin 加载 + ServiceLoader 发现 + 规则分派三段链路都通
+id: demo.controller.hello
+className: com.iast.demo.FileCheckController
+methods:
+  - "hello#()Ljava/lang/String;"
+plugin: HelloPlugin
+pluginConfig:
+  prefix: "HelloPlugin"

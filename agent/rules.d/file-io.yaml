@@ -1,0 +1,43 @@
+# File / NIO 基础拦截：CustomEventPlugin 写 JSONL 事件
+# multi-doc：每条 rule 之间用 --- 分割
+
+id: file.io.File
+className: java.io.File
+methods:
+  - "<init>#*"
+  - "exists#()Z"
+  - "getAbsolutePath#()Ljava/lang/String;"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    method: "methodName"
+    arg0: "params[0]"
+  event: "java.io.File.{method}({arg0})"
+  event_type: file.io
+
+---
+
+id: file.io.Files.exists
+className: java.nio.file.Files
+methods:
+  - "exists#(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    path: "params[0].toString()"
+  event: "Files.exists({path})"
+  event_type: file.exists
+
+---
+
+id: file.io.Files.list
+className: java.nio.file.Files
+methods:
+  - "list#(Ljava/nio/file/Path;)Ljava/util/stream/Stream;"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    file_path: "params[0].toString()"
+  event: "file list | {file_path}"
+  event_type: file.list
+  event_level: info

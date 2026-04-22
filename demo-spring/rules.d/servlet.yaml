@@ -1,0 +1,58 @@
+# Step 4 使用：Servlet 请求 ID 跟踪 + 链路上下文采集
+id: demo.trace.req-id
+className: jakarta.servlet.http.HttpServlet
+methods:
+  - "service#*"
+plugin: RequestIdPlugin
+
+---
+
+# 接口匹配示例 A：javax.servlet.Servlet（Servlet 4 及之前的命名空间）
+# demo-spring 用的是 Spring Boot 3 + jakarta，javax.servlet.Servlet 不会被加载 → 此条永远不命中；
+# 留作"监控 javax.servlet.Servlet 接口"的标准写法。
+id: demo.servlet.javax
+className: javax.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    impl: "target.getClass().getName()"
+  event: "javax Servlet.service | {impl}"
+  event_type: servlet.service.javax
+
+---
+
+# 接口匹配示例 B：jakarta.servlet.Servlet（demo-spring 实际使用的命名空间）
+id: demo.servlet.jakarta
+className: jakarta.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    impl: "target.getClass().getName()"
+  event: "jakarta Servlet.service | {impl}"
+  event_type: servlet.service.jakarta
+
+---
+
+# ServletBodyPlugin：打印请求 body
+# wrapServletRequest=true 触发 ServletBodyAdvice，运行期把 arg[0] 换成缓冲 wrapper
+id: demo.servlet.body
+className: jakarta.servlet.http.HttpServlet
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: ServletBodyPlugin
+wrapServletRequest: true
+pluginConfig:
+  maxLogBytes: 8192
+  hardLimitBytes: 10485760
+  textContentTypes:
+    - application/json
+    - application/xml
+    - application/x-www-form-urlencoded
+    - text/
+  charset: UTF-8

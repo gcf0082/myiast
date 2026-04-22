@@ -17,6 +17,10 @@ public class MonitorDefaultConfig {
     // 外部插件目录：非空时 agent 会扫该目录下所有 *.jar，用 ServiceLoader 加载其中的
     // com.iast.agent.plugin.IastPlugin 实现。空字符串 = 不加载任何外部插件（默认）。
     private String pluginsDir = "";
+    // 规则目录：非空时 agent 会扫该目录下所有 *.yaml/*.yml，每个文件支持 multi-doc（用 ---
+    // 分割），每个 doc 一条规则。空字符串 = 不从目录加载（默认）。
+    // inline monitor.rules: 已移除——规则只能从此目录加载。
+    private String rulesDir = "";
 
     public List<String> getEvents() {
         return events;
@@ -48,5 +52,13 @@ public class MonitorDefaultConfig {
 
     public void setPluginsDir(String pluginsDir) {
         this.pluginsDir = pluginsDir == null ? "" : pluginsDir;
+    }
+
+    public String getRulesDir() {
+        return rulesDir;
+    }
+
+    public void setRulesDir(String rulesDir) {
+        this.rulesDir = rulesDir == null ? "" : rulesDir;
     }
 }

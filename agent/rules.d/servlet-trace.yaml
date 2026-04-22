@@ -1,0 +1,9 @@
+# Servlet 入口：请求 ID 跟踪 + 链路上下文采集
+# RequestIdPlugin 同时负责 X-Request-Id 头注入和 client_ip / forward 链 / xseeker 采集
+# 给出口侧 HttpForwardPlugin 透传
+
+id: trace.req-id
+className: jakarta.servlet.http.HttpServlet
+methods:
+  - "service#*"
+plugin: RequestIdPlugin

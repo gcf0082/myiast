@@ -1,0 +1,26 @@
+# 高危原生 API：进程 exec 与 Socket 出网
+# 监控这些方法可观察"是否有意料外的子进程 / 远程连接"
+
+id: process.exec
+className: java.lang.Runtime
+methods:
+  - "exec#*"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    cmd: "params[0]"
+  event: "Runtime.exec({cmd})"
+  event_type: process.exec
+
+---
+
+id: net.socket.connect
+className: java.net.Socket
+methods:
+  - "connect#*"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    remote: "params[0]"
+  event: "Socket.connect({remote})"
+  event_type: net.connect

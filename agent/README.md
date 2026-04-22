@@ -95,9 +95,12 @@ AttachTool（`iast-start.sh` 内部调用）自动按以下顺序尝试，首个
 
 手动强制：`java -DiastAttach=jdk|jattach|fallback -jar iast-agent.jar <pid> ...`
 
-## 配置文件 iast-monitor.yaml
+## 配置文件 iast-monitor.yaml + 规则目录
 
-结构总览：
+主配置只放全局选项（output / monitor.default）；具体监控规则全部放到独立的 **规则目录**
+里，每个 yaml 文件可写一条或多条规则，多条之间用 YAML 标准的 `---` 分割。
+
+主 yaml 结构：
 
 ```yaml
 output:
@@ -111,15 +114,43 @@ monitor:
   default:
     includeFutureClasses: false   # 见"接口级监控"一节
     premainDelayMs: 60000         # 见"premain 延迟 install"一节
-  rules:
-    - className: <FQCN>
-      matchType: exact                  # exact | interface，默认 exact
-      methods:
-        - "<methodName>#<descriptor>"   # 具体签名，"<init>" 为构造函数
-        - "<methodName>#*"               # 通配任意签名
-      plugin: <CustomEventPlugin | RequestIdPlugin | ServletBodyPlugin | LogPlugin>
-      pluginConfig: {...}                # CustomEventPlugin / ServletBodyPlugin 用
+    pluginsDir: /opt/iast/plugins # 外部插件目录（可选）
+    rulesDir: ./rules.d           # 规则目录：扫该目录下所有 *.yaml/*.yml；相对路径按本 yaml 所在目录解析
 ```
+
+规则目录里一个文件示例（`rules.d/file-io.yaml`）：
+
+```yaml
+id: file.io.File                  # 可选，仅作为可读标签；CLI rules 命令展示
+className: java.io.File
+matchType: exact                   # exact | interface，默认 exact
+methods:
+  - "<methodName>#<descriptor>"    # 具体签名，"<init>" 为构造函数
+  - "<methodName>#*"                # 通配任意签名
+plugin: <CustomEventPlugin | RequestIdPlugin | ServletBodyPlugin | HttpForwardPlugin | LogPlugin>
+pluginConfig: {...}                # CustomEventPlugin / ServletBodyPlugin 用
+
+---
+
+id: file.io.Files
+className: java.nio.file.Files
+methods: ["exists#*"]
+plugin: CustomEventPlugin
+pluginConfig: {...}
+```
+
+规则目录加载约定：
+- 仅扫一层（不递归子目录）
+- `*.yaml` / `*.yml` 文件按文件名字典序处理
+- 单文件加载失败 WARN+继续，不影响其他文件
+- 启动时每个文件打一行 `[IAST Agent] Loaded N rule(s) from <file>`
+- 每条 rule 打一行 `[IAST Agent] Loaded monitor rule: [id=...] ClassName -> [...] (plugin: ..., from: <file>)`
+
+⚠️ 历史 inline `monitor.rules:` 已**废弃**：检测到此节存在会 WARN 一句但**不解析**。
+请把规则迁到 rulesDir 指向的目录。
+
+> 实现细节：rule 文件用 SnakeYAML 的 typed Constructor + `loadAll` 解析，避免 YAML 1.1
+> 实现把 `on:` / `yes:` / `no:` 这类 map key 误识别成 Boolean——用户能放心用这些字面量做插件配置 key。
 
 内置插件：
 

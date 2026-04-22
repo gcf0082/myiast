@@ -141,18 +141,22 @@ final class CliHandler {
         List<String> monitored = MonitorConfig.getMonitoredClasses();
         if (arg.isEmpty()) {
             StringBuilder sb = new StringBuilder();
-            sb.append(pad("ClassName", 60))
+            sb.append(pad("ClassName", 56))
               .append(pad("matchType", 12))
               .append(pad("wrapBody", 10))
+              .append(pad("ids", 30))
               .append("methods").append('\n');
             for (String internal : monitored) {
                 String display = internal.replace('/', '.');
                 String mt = MonitorConfig.getMatchType(internal);
                 boolean wrap = MonitorConfig.isWrapServletRequest(internal);
                 int n = MonitorConfig.getMethodRules(internal).size();
-                sb.append(pad(display, 60))
+                List<String> ids = MonitorConfig.getRuleIds(internal);
+                String idsCell = ids.isEmpty() ? "-" : ids.toString();
+                sb.append(pad(display, 56))
                   .append(pad(mt, 12))
                   .append(pad(String.valueOf(wrap), 10))
+                  .append(pad(idsCell, 30))
                   .append(n).append('\n');
             }
             sb.append("total: ").append(monitored.size());
@@ -164,8 +168,10 @@ final class CliHandler {
         if (methods.isEmpty()) {
             return "no rule found for: " + arg;
         }
+        List<String> ids = MonitorConfig.getRuleIds(internal);
         StringBuilder sb = new StringBuilder();
         sb.append("class:     ").append(internal.replace('/', '.')).append('\n');
+        sb.append("ids:       ").append(ids.isEmpty() ? "-" : ids).append('\n');
         sb.append("matchType: ").append(MonitorConfig.getMatchType(internal)).append('\n');
         sb.append("wrapBody:  ").append(MonitorConfig.isWrapServletRequest(internal)).append('\n');
         sb.append("plugins:   ").append(MonitorConfig.getPluginNames(internal)).append('\n');

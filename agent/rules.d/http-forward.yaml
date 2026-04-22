@@ -1,0 +1,9 @@
+# 出口链路头透传（默认注释掉；目标类不在的环境本规则不命中、插件不会被调用，不会报错）
+# 详见 README.md 「内置插件」表 HttpForwardPlugin 一行
+# 适配其他出口客户端时直接复制本插件改一份；本插件硬编码 args[2].putHttpContextHeader
+
+# id: forward.http-rest
+# className: com.huawei.bsp.roa.util.restclient.HttpRest
+# methods:
+#   - "sendHttpRequest#*"
+# plugin: HttpForwardPlugin

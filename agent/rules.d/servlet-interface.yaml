@@ -1,0 +1,30 @@
+# 接口匹配示例：matchType: interface 把规则展开到所有具体实现类
+# 注意：interface 规则下 CustomEventPlugin 不会按 className+methodName 命中（运行期 className
+#      是具体实现类，不是接口名），所以这里只是给"如何写"做样板，CustomEventPlugin 不会发事件。
+# 真要在 interface 规则下生效，请用不按 className 路由的插件（RequestIdPlugin、ServletBodyPlugin）。
+
+id: trace.servlet.javax
+className: javax.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljavax/servlet/ServletRequest;Ljavax/servlet/ServletResponse;)V"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    impl: "target.getClass().getName()"
+  event: "javax Servlet.service | {impl}"
+  event_type: servlet.service.javax
+
+---
+
+id: trace.servlet.jakarta
+className: jakarta.servlet.Servlet
+matchType: interface
+methods:
+  - "service#(Ljakarta/servlet/ServletRequest;Ljakarta/servlet/ServletResponse;)V"
+plugin: CustomEventPlugin
+pluginConfig:
+  my_params:
+    impl: "target.getClass().getName()"
+  event: "jakarta Servlet.service | {impl}"
+  event_type: servlet.service.jakarta
