@@ -14,6 +14,8 @@ public class RequestIdPlugin implements IastPlugin {
      *  和 x-seeker-forward-* / xseeker 同前缀，避免和业务自己的 X-Request-Id 撞名。 */
     private static final String HEADER_NAME = "X-Seeker-Request-Id";
     private static final String INCOMING_HEADER = HEADER_NAME;
+    /** 本机生成 UUID 时加的前缀。上游传进来的 id 不加前缀，原样复用以保持链路完整。 */
+    private static final String GENERATED_PREFIX = "reqId_";
 
     // ===== 链路 attr 键名（HttpForwardPlugin 出口侧会读这几个） =====
     /** 主调方 IP，优先取 x-real-client-addr 头，否则 request.getRemoteAddr() */
@@ -59,7 +61,9 @@ public class RequestIdPlugin implements IastPlugin {
             // 前端可以用自己种的 id 追溯。上游没传再 fallback 到本地 UUID。
             Object req = (context.getArgs() != null && context.getArgs().length > 0) ? context.getArgs()[0] : null;
             String incoming = extractIncomingId(req);
-            requestId = (incoming != null) ? incoming : UUID.randomUUID().toString().replace("-", "");
+            requestId = (incoming != null)
+                    ? incoming
+                    : GENERATED_PREFIX + UUID.randomUUID().toString().replace("-", "");
             RequestIdHolder.set(requestId);
         }
 
