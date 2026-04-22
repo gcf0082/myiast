@@ -147,7 +147,33 @@ public class MonitorConfig {
             outputReturn = outputConfig.isReturn();
             outputStacktrace = outputConfig.isStacktrace();
             stacktraceDepth = outputConfig.getStacktraceDepth();
+
+            // outputDir：log + jsonl 共用目录。先应用 outputDir 给两个文件设新路径；
+            // 之后如果 eventsPath 也配了（全路径覆盖），下面的 setEventsPath 会再次覆盖
+            // events 那条；log 这条仍走 outputDir。
+            String od = outputConfig.getOutputDir();
+            if (od != null && !od.trim().isEmpty()) {
+                String resolved = od.trim();
+                if (!new File(resolved).isAbsolute()) {
+                    File cfgParent = new File(configFilePath).getAbsoluteFile().getParentFile();
+                    if (cfgParent != null) resolved = new File(cfgParent, resolved).getAbsolutePath();
+                }
+                File dir = new File(resolved);
+                if (!dir.exists() && !dir.mkdirs()) {
+                    LogWriter.getInstance().warn("[IAST Agent] outputDir mkdir failed: " + resolved
+                            + " (keep default /tmp)");
+                } else {
+                    String pid = java.lang.management.ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
+                    LogWriter.getInstance().setLogPath(
+                            new File(dir, "iast-agent-" + pid + ".log").getAbsolutePath());
+                    com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(
+                            new File(dir, "iast-events-" + pid + ".jsonl").getAbsolutePath());
+                    LogWriter.getInstance().info("[IAST Agent] outputDir: " + resolved);
+                }
+            }
+
             if (outputConfig.getEventsPath() != null && !outputConfig.getEventsPath().isEmpty()) {
+                // 全路径 eventsPath 覆盖 outputDir 推算出来的 events 路径
                 com.iast.agent.plugin.event.EventWriter.getInstance().setEventsPath(outputConfig.getEventsPath());
             }
             // 日志级别从 yaml 应用——本调用要早于"Loaded monitor rule"等后续 info 日志，

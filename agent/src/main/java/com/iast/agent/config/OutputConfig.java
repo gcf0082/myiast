@@ -11,6 +11,10 @@ public class OutputConfig {
     private String eventsPath;
     /** 日志级别：debug / info / warn / error，默认 info。MonitorConfig 加载完后会传给 LogWriter。 */
     private String logLevel;
+    /** 输出目录：iast-agent-&lt;pid&gt;.log 和 iast-events-&lt;pid&gt;.jsonl 共用。空 = 默认 /tmp。
+     *  相对路径按主 yaml 所在目录解析；不存在自动 mkdirs。
+     *  与 eventsPath 同时配 → eventsPath 优先（仅作用 events 文件，log 仍走 outputDir）。 */
+    private String outputDir;
 
     public boolean isArgs() {
         return args;
@@ -58,5 +62,13 @@ public class OutputConfig {
 
     public void setLogLevel(String logLevel) {
         this.logLevel = logLevel;
+    }
+
+    public String getOutputDir() {
+        return outputDir;
+    }
+
+    public void setOutputDir(String outputDir) {
+        this.outputDir = outputDir;
     }
 }

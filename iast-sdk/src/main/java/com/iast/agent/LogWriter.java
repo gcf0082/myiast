@@ -36,6 +36,7 @@ public class LogWriter {
     private static volatile LogWriter instance;
     private BufferedWriter writer;
     private String logPath;
+    private boolean shutdownHookRegistered;
     private static volatile LogLevel currentLevel = LogLevel.INFO;
 
     private LogWriter() {
@@ -54,31 +55,65 @@ public class LogWriter {
         return instance;
     }
 
-    /** 设置自定义日志路径，必须在 {@link #init} 之前调用。 */
-    public void setLogPath(String logPath) {
-        this.logPath = logPath;
+    /**
+     * 设置自定义日志路径。{@link #init} 之前调 → 之后 init 走新路径；之后调 → 立刻 reopen
+     * （关旧 writer + 开新 writer），便于运行期切换（如 yaml 配 outputDir 后 MonitorConfig
+     * 调过来切目录）。空 / 未变化 → no-op。
+     */
+    public synchronized void setLogPath(String newLogPath) {
+        if (newLogPath == null || newLogPath.isEmpty() || newLogPath.equals(this.logPath)) return;
+        if (writer == null) {
+            // 未 init 过 → 仅记下新路径，留给后面的 init() 用
+            this.logPath = newLogPath;
+            return;
+        }
+        // 已 init → reopen
+        String old = this.logPath;
+        closeWriter();
+        // 旧文件没写过任何字节就清掉，避免在 /tmp 留一个 0 字节空文件
+        try {
+            java.io.File of = new java.io.File(old);
+            if (of.exists() && of.length() == 0L) of.delete();
+        } catch (Throwable ignore) {}
+        this.logPath = newLogPath;
+        openWriter();
+        info("[IAST Agent] log path changed: " + old + " -> " + newLogPath);
     }
 
-    /** 初始化日志文件流，注册 JVM 退出钩子自动关闭。 */
-    public void init() {
+    /** 初始化日志文件流，注册 JVM 退出钩子自动关闭。幂等：多次调用只开一次。 */
+    public synchronized void init() {
+        if (writer != null) return;
+        openWriter();
+        if (!shutdownHookRegistered) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                synchronized (this) {
+                    closeWriter();
+                }
+            }));
+            shutdownHookRegistered = true;
+        }
+    }
+
+    private void openWriter() {
         try {
             FileOutputStream fos = new FileOutputStream(logPath, true);
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
             writer = new BufferedWriter(osw);
-
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                try {
-                    if (writer != null) {
-                        writer.flush();
-                        writer.close();
-                    }
-                } catch (IOException e) {
-                    // 忽略关闭异常
-                }
-            }));
         } catch (Exception e) {
-            // 初始化失败静默处理，不影响源进程
+            // 打开失败静默——agent 不能因日志写不了就废业务
+            writer = null;
         }
+    }
+
+    private void closeWriter() {
+        if (writer == null) return;
+        try {
+            writer.flush();
+            writer.close();
+        } catch (IOException ignore) {
+            // 关闭异常忽略
+        }
+        writer = null;
     }
 
     // ============= 级别控制 =============

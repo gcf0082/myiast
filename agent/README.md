@@ -58,6 +58,11 @@ jps -l
 - 人读日志：`/tmp/iast-agent-<pid>.log`（拦截调用、参数、栈、插件启动信息）
 - JSONL 事件：`/tmp/iast-events-<pid>.jsonl`（CustomEventPlugin 结构化事件，每行一个 JSON）
 
+> 改输出目录：在 `output:` 下配 `outputDir: /var/log/iast/`（或相对路径，按主 yaml 所在
+> 目录解析），两个文件都会落到该目录、文件名仍带 PID 后缀。yaml 解析前的前几行日志仍
+> 写默认 `/tmp/`，之后切到新目录（agent log 里有「log path changed」一行做切换标记）。
+> 同时配了 `eventsPath`（全路径）的话，eventsPath 优先（仅作用 events 文件）。
+
 ### 模式二：premain（JVM 启动时挂载，推荐用于生产常驻）
 
 在 java 命令里加 `-javaagent`：
