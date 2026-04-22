@@ -324,6 +324,7 @@ public class IastAgent {
         registerPlugin(pm, "RequestIdPlugin", new com.iast.agent.plugin.RequestIdPlugin(), allCfgs);
         registerPlugin(pm, "CustomEventPlugin", new com.iast.agent.plugin.CustomEventPlugin(), allCfgs);
         registerPlugin(pm, "ServletBodyPlugin", new com.iast.agent.plugin.ServletBodyPlugin(), allCfgs);
+        registerPlugin(pm, "HttpForwardPlugin", new com.iast.agent.plugin.HttpForwardPlugin(), allCfgs);
 
         // 外部插件：按 monitor.default.pluginsDir 指向的目录，通过 ServiceLoader 发现
         // 冲突策略：外部插件 getName() 如果和内置撞名，保守跳过——不允许外部覆盖内置实现

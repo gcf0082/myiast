@@ -14,6 +14,22 @@ public class RequestIdPlugin implements IastPlugin {
     private static final String HEADER_NAME = "X-Request-Id";
     private static final String INCOMING_HEADER = HEADER_NAME;
 
+    // ===== 链路 attr 键名（HttpForwardPlugin 出口侧会读这几个） =====
+    /** 主调方 IP，优先取 x-real-client-addr 头，否则 request.getRemoteAddr() */
+    public static final String ATTR_CLIENT_IP       = "iast.client_ip";
+    /** 上游 forward_req_id 链（服务端入口收到时的值，出口拼接时往后追加本机 reqId） */
+    public static final String ATTR_FORWARD_REQ_ID  = "iast.forward_req_id";
+    /** 已经聚合好的 forward_ip 链：incoming x-seeker-forward-ip + "," + 当前 client_ip */
+    public static final String ATTR_FORWARD_IP      = "iast.forward_ip";
+    /** 透传字段，原样进出，不做任何加工 */
+    public static final String ATTR_XSEEKER         = "iast.xseeker";
+
+    // 入口取上下文用到的请求头（参考项目同名）
+    private static final String IN_HEADER_REAL_CLIENT_ADDR  = "x-real-client-addr";
+    private static final String IN_HEADER_FORWARD_REQ_ID    = "x-seeker-forward-req-id";
+    private static final String IN_HEADER_FORWARD_IP        = "x-seeker-forward-ip";
+    private static final String IN_HEADER_XSEEKER           = "xseeker";
+
     private LogWriter logWriter;
 
     @Override
@@ -61,7 +77,62 @@ public class RequestIdPlugin implements IastPlugin {
                     + " (<2, expected req+res — service overload?) (requestId=" + requestId + ")");
         }
 
+        // 链路上下文采集（仅最外层入口做一次；嵌套层 attr 已存好，不重复覆盖）。出口侧
+        // HttpForwardPlugin 从这几个 attr 读取后注入到下游请求里。
+        if (depth == 1 && context.getArgs() != null && context.getArgs().length > 0) {
+            captureLinkContext(context.getArgs()[0], context.getCallId());
+        }
+
         logWriter.info("[IAST RequestId] [callId=" + context.getCallId() + "] [requestId=" + requestId + "] === Request Started (depth=" + depth + ") ===");
+    }
+
+    /**
+     * 入口从 ServletRequest 上读链路上下文，存到 IastContext attribute。后续同线程上的
+     * 出口（如 HttpRest.sendHttpRequest）就能从同一组 key 取到。
+     *
+     * <p>所有访问都走反射——agent 不能编译期依赖 Servlet API（bootstrap CL 看不见 jakarta/javax.servlet）。
+     * 任一字段抓不到都不致命，debug 日志一句、继续；不影响 requestId 主流程。
+     */
+    private void captureLinkContext(Object req, long callId) {
+        if (req == null) return;
+
+        String clientIp = extractStringHeader(req, IN_HEADER_REAL_CLIENT_ADDR);
+        if (clientIp == null) {
+            clientIp = extractRemoteAddr(req);
+        }
+        if (clientIp != null) {
+            IastContext.putAttribute(ATTR_CLIENT_IP, clientIp);
+        }
+
+        String incomingFwdId = extractStringHeader(req, IN_HEADER_FORWARD_REQ_ID);
+        if (incomingFwdId != null) {
+            IastContext.putAttribute(ATTR_FORWARD_REQ_ID, incomingFwdId);
+        }
+
+        // forward_ip = incoming chain ++ "," ++ client_ip；缺哪一段就退化用另一段
+        String incomingFwdIp = extractStringHeader(req, IN_HEADER_FORWARD_IP);
+        String forwardIp;
+        if (incomingFwdIp != null && clientIp != null) {
+            forwardIp = incomingFwdIp + "," + clientIp;
+        } else if (incomingFwdIp != null) {
+            forwardIp = incomingFwdIp;
+        } else {
+            forwardIp = clientIp;  // 可能仍为 null，这种就什么都不存
+        }
+        if (forwardIp != null) {
+            IastContext.putAttribute(ATTR_FORWARD_IP, forwardIp);
+        }
+
+        String xseeker = extractStringHeader(req, IN_HEADER_XSEEKER);
+        if (xseeker != null) {
+            IastContext.putAttribute(ATTR_XSEEKER, xseeker);
+        }
+
+        if (logWriter.isDebugEnabled()) {
+            logWriter.debug("[IAST RequestId] [callId=" + callId + "] link captured: client_ip="
+                    + clientIp + ", forward_req_id=" + incomingFwdId
+                    + ", forward_ip=" + forwardIp + ", xseeker=" + (xseeker == null ? "null" : "<set>"));
+        }
     }
 
     /**
@@ -168,28 +239,50 @@ public class RequestIdPlugin implements IastPlugin {
         return "RequestIdPlugin";
     }
 
-    /**
-     * 反射读 request.getHeader("X-Request-Id")（ServletRequest 接口在 Agent 所在 bootstrap CL
-     * 不可见，不能编译时依赖）。拿到什么用什么，不对值做任何改动——上游传啥就用啥。
-     * 返回 null 代表上游没传这个头，由调用方 fallback 到 UUID。
-     */
+    /** 反射调 request.getHeader(name)；上游 X-Request-Id 复用、链路 attr 采集都走它。 */
     private static String extractIncomingId(Object req) {
+        return extractStringHeader(req, INCOMING_HEADER);
+    }
+
+    /**
+     * 反射读取一个请求头。req 可能是 ServletRequest（无 getHeader）或 HttpServletRequest，
+     * 两种 namespace（javax/jakarta）也都在；统一用反射规避编译期依赖。
+     * 失败返回 null，debug 日志一句；不抛异常打断主流程。
+     */
+    private static String extractStringHeader(Object req, String name) {
         if (req == null) return null;
         try {
             Method getHeader = req.getClass().getMethod("getHeader", String.class);
-            Object v = getHeader.invoke(req, INCOMING_HEADER);
+            Object v = getHeader.invoke(req, name);
             return (v instanceof String) ? (String) v : null;
         } catch (NoSuchMethodException nsme) {
-            // 不是 HttpServletRequest（可能是 ServletRequest 接口直接来的）；正常情况，debug 即可
+            // 不是 HttpServletRequest（可能是 ServletRequest 接口直接来的）
             LogWriter lw = LogWriter.getInstance();
             if (lw.isDebugEnabled()) {
-                lw.debug("[IAST RequestId] req has no getHeader (class=" + req.getClass().getName() + "); will fall back to UUID");
+                lw.debug("[IAST RequestId] req has no getHeader (class=" + req.getClass().getName() + "); skip header '" + name + "'");
             }
             return null;
         } catch (Throwable t) {
             LogWriter lw = LogWriter.getInstance();
             if (lw.isDebugEnabled()) {
-                lw.debug("[IAST RequestId] extractIncomingId failed on " + req.getClass().getName()
+                lw.debug("[IAST RequestId] getHeader('" + name + "') failed on " + req.getClass().getName()
+                        + ": " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
+            return null;
+        }
+    }
+
+    /** 反射调 request.getRemoteAddr()，作为 client_ip 的兜底来源。 */
+    private static String extractRemoteAddr(Object req) {
+        if (req == null) return null;
+        try {
+            Method m = req.getClass().getMethod("getRemoteAddr");
+            Object v = m.invoke(req);
+            return (v instanceof String) ? (String) v : null;
+        } catch (Throwable t) {
+            LogWriter lw = LogWriter.getInstance();
+            if (lw.isDebugEnabled()) {
+                lw.debug("[IAST RequestId] getRemoteAddr() failed on " + req.getClass().getName()
                         + ": " + t.getClass().getSimpleName() + ": " + t.getMessage());
             }
             return null;

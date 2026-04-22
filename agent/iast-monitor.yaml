@@ -131,3 +131,23 @@ monitor:
     #       - application/x-www-form-urlencoded
     #       - text/
     #     charset: UTF-8               # Content-Type 没带 charset 时的兜底
+
+    # ---------- 示例 6：HttpForwardPlugin（出口链路头透传） ----------
+    # 业务进程作为 client 发起出口 HTTP 时，把入口 RequestIdPlugin 收集的 client_ip /
+    # forward 链 / xseeker 注入到下游请求里，下游 hook 同套 servlet 入口规则就能把链路接上。
+    # 头名（与参考体系对齐）：
+    #   x-seeker-forward-req-id   = (incoming-chain ?: "") + "," + 本机 reqId
+    #   x-seeker-forward-ip       = 入口算好的 forward_ip 链
+    #   xseeker                   = 透传字段，原样进出
+    # 目标类来自具体业务环境（com.huawei.bsp.roa.util.restclient.HttpRest），不在的环境
+    # 本规则不命中、插件不会被调用、不会报错。
+    # 默认 pluginConfig 已对齐 HttpRest API：
+    #   - 第三个参数 (HttpContext) 上调 putHttpContextHeader(String, String)
+    # 不同 client 改 requestArgIndex / headerSetterMethod 即可（方法签名固定 (String,String)）。
+    # - className: com.huawei.bsp.roa.util.restclient.HttpRest
+    #   methods:
+    #     - "sendHttpRequest#*"
+    #   plugin: HttpForwardPlugin
+    #   pluginConfig:
+    #     requestArgIndex: 2
+    #     headerSetterMethod: putHttpContextHeader

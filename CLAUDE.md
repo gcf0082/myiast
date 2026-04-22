@@ -79,7 +79,7 @@ IAST_VERSION=1.2.3 ./dist.sh
 
 **同一方法挂多个插件**是支持的——给同一 `className` 写多条 YAML 规则、`plugin:` 不同就行。**但同一 `(className, methodName)` 上挂两条 `CustomEventPlugin` 会撞**——`CustomEventPlugin` 内部按 `className+methodName` 去重 key，第二条会静默覆盖第一条。
 
-内置插件在 `agent/src/main/java/com/iast/agent/plugin/`：`LogPlugin`、`RequestIdPlugin`、`CustomEventPlugin`、`ServletBodyPlugin`。**外部插件**通过 `monitor.default.pluginsDir` 的 `ServiceLoader` 加载（每个插件 jar 必须有 `META-INF/services/com.iast.agent.plugin.IastPlugin`，列出实现类 FQCN）。`getName()` 和内置撞名的外部插件会被打 WARN 跳过——内置永远不会被覆盖。
+内置插件在 `agent/src/main/java/com/iast/agent/plugin/`：`LogPlugin`、`RequestIdPlugin`、`CustomEventPlugin`、`ServletBodyPlugin`、`HttpForwardPlugin`（出口链路头透传，反射 setter，目标类不在 classpath 时静默不命中）。**外部插件**通过 `monitor.default.pluginsDir` 的 `ServiceLoader` 加载（每个插件 jar 必须有 `META-INF/services/com.iast.agent.plugin.IastPlugin`，列出实现类 FQCN）。`getName()` 和内置撞名的外部插件会被打 WARN 跳过——内置永远不会被覆盖。
 
 ### `wrapper-java` 源集（构建小机关）
 
