@@ -24,6 +24,9 @@ public class MonitorDefaultConfig {
     // 过滤器目录：和 rulesDir 同套约定（递归扫子目录、typed loadAll、相对路径按主 yaml 解析）。
     // 每条 filter 用 target: <rule-id> 关联到一条规则上。空字符串 = 不加载任何过滤器（默认）。
     private String filtersDir = "";
+    // 规则启停开关：给 rulesDir 下的具体文件 / 子目录开关。详见 RuleToggleConfig。
+    // 空 / 未配 = 全部启用（保留零配置行为）。
+    private java.util.List<RuleToggleConfig> ruleToggles;
 
     public List<String> getEvents() {
         return events;
@@ -71,5 +74,13 @@ public class MonitorDefaultConfig {
 
     public void setFiltersDir(String filtersDir) {
         this.filtersDir = filtersDir == null ? "" : filtersDir;
+    }
+
+    public java.util.List<RuleToggleConfig> getRuleToggles() {
+        return ruleToggles;
+    }
+
+    public void setRuleToggles(java.util.List<RuleToggleConfig> ruleToggles) {
+        this.ruleToggles = ruleToggles;
     }
 }

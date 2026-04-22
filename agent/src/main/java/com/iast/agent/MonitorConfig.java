@@ -42,6 +42,9 @@ public class MonitorConfig {
     private static volatile String filtersDir = "";
     // 加载完的过滤器原始定义（IastAgent.initPlugins 时塞进每个插件的 init config）
     private static final List<com.iast.agent.config.FilterConfig> filterDefs = new ArrayList<>();
+    // 规则启停开关（main yaml 里 monitor.default.ruleToggles）。按 path 长度降序排，
+    // 查找时第一个匹配即胜出（"最具体路径胜出"语义）。
+    private static final List<com.iast.agent.config.RuleToggleConfig> ruleToggles = new ArrayList<>();
     // internal className -> 该类下所有规则的 id 列表（id 缺省时该 rule 不计入；CLI rules 命令展示用）
     private static final Map<String, List<String>> classRuleIds = new HashMap<>();
     private static final String DEFAULT_YAML_CONFIG_PATH = "iast-monitor.yaml";
@@ -205,6 +208,33 @@ public class MonitorConfig {
             if (!filtersDir.isEmpty()) {
                 LogWriter.getInstance().info("[IAST Agent] filtersDir: " + filtersDir);
             }
+
+            // ruleToggles：规则启停开关。排序保证 "最长 path 胜出"（最具体优先）的查找便利
+            ruleToggles.clear();
+            List<com.iast.agent.config.RuleToggleConfig> toggles = defCfg.getRuleToggles();
+            if (toggles != null) {
+                for (com.iast.agent.config.RuleToggleConfig t : toggles) {
+                    if (t == null || t.getPath() == null || t.getPath().trim().isEmpty()) {
+                        LogWriter.getInstance().warn("[IAST Agent] ruleToggle missing path; skip");
+                        continue;
+                    }
+                    String p = t.getPath().trim().replace('\\', '/');
+                    while (p.startsWith("/")) p = p.substring(1);
+                    while (p.endsWith("/")) p = p.substring(0, p.length() - 1);
+                    String mode = t.getMode() == null ? "enable" : t.getMode().trim().toLowerCase();
+                    if (!"enable".equals(mode) && !"disable".equals(mode)) {
+                        LogWriter.getInstance().warn("[IAST Agent] ruleToggle path=" + p
+                                + " unknown mode '" + t.getMode() + "' (expected enable/disable); treat as enable");
+                        mode = "enable";
+                    }
+                    com.iast.agent.config.RuleToggleConfig norm = new com.iast.agent.config.RuleToggleConfig();
+                    norm.setPath(p);
+                    norm.setMode(mode);
+                    ruleToggles.add(norm);
+                    LogWriter.getInstance().info("[IAST Agent] ruleToggle: " + mode + " " + p);
+                }
+                ruleToggles.sort((a, b) -> Integer.compare(b.getPath().length(), a.getPath().length()));
+            }
         }
 
         // inline monitor.rules: 已废弃。检测到老 yaml 仍有该节就 WARN，但不解析。
@@ -225,6 +255,31 @@ public class MonitorConfig {
         if (!filtersDir.isEmpty()) {
             loadFiltersDir(filtersDir);
         }
+    }
+
+    /**
+     * 决策：相对 rulesDir 的某个文件 path 是否被启用？
+     * 在已按 path 长度降序排好的 ruleToggles 里找第一个匹配（最具体路径胜出）：
+     * - toggle.path 以 .yaml/.yml 结尾视为文件，必须与 filePath 精确相等
+     * - 否则视为目录前缀，匹配 filePath == path 或 filePath 以 path + "/" 开头
+     * 都不匹配 → 默认 enable（零配置 = 全部启用）。
+     */
+    private static boolean isRuleFileEnabled(String filePath) {
+        for (com.iast.agent.config.RuleToggleConfig t : ruleToggles) {
+            String tp = t.getPath();
+            String tpLow = tp.toLowerCase();
+            boolean isFileToggle = tpLow.endsWith(".yaml") || tpLow.endsWith(".yml");
+            boolean match;
+            if (isFileToggle) {
+                match = filePath.equals(tp);
+            } else {
+                match = filePath.equals(tp) || filePath.startsWith(tp + "/");
+            }
+            if (match) {
+                return "enable".equals(t.getMode());
+            }
+        }
+        return true;  // 默认启用
     }
 
     /**
@@ -261,6 +316,11 @@ public class MonitorConfig {
 
         for (File f : files) {
             String origin = relPath(f, rootCanon);
+            // 应用 ruleToggles：被 disable 的文件直接跳过，连解析都省了
+            if (!isRuleFileEnabled(origin)) {
+                LogWriter.getInstance().info("[IAST Agent] Skipped rule file (toggle disable): " + origin);
+                continue;
+            }
             int loaded = 0;
             try (InputStream in = new FileInputStream(f)) {
                 // 用 typed Constructor —— 关键：避免 SnakeYAML 把 `on:`/`yes:`/`no:` 这类 YAML 1.1 关键字

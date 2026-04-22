@@ -43,5 +43,18 @@ monitor:
     # 详见 README.md 「事件过滤 filtersDir」章节。
     filtersDir: ./filters.d
 
+    # 规则启停开关：以「相对 rulesDir 的 path」为粒度的 enable/disable 列表。
+    # path 以 .yaml/.yml 结尾视为文件、否则视为目录前缀（覆盖该目录所有子文件）；
+    # 同一文件多条匹配时**最长 path 胜出**（最具体路径优先）；mode 缺省为 enable；
+    # 不在列表里的文件默认 enable（零配置 = 全部启用）。
+    #
+    # ruleToggles:
+    #   - path: default/command            # 启用整个 default/command/ 子目录（默认就是 enable，多写一行做 self-doc）
+    #     mode: enable
+    #   - path: default/file               # 关掉整个 default/file/ 子目录
+    #     mode: disable
+    #   - path: default/file/keep.yaml     # 但保留这一个文件（最长 path 胜出，覆盖父目录的 disable）
+    #     mode: enable
+
   # ⚠️ 历史 monitor.rules: inline 形式已废弃。检测到此节存在会 WARN 一句但不解析。
   # 把规则迁到 rulesDir 指向的目录即可，每条规则一份小 yaml（或 multi-doc 一文件多条）。

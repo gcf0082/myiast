@@ -148,6 +148,33 @@ pluginConfig: {...}
 - 启动时每个文件打一行 `[IAST Agent] Loaded N rule(s) from <relative-path>`
 - 每条 rule 打一行 `[IAST Agent] Loaded monitor rule: [id=...] ClassName -> [...] (plugin: ..., from: <relative-path>)`
 
+### 规则启停开关 ruleToggles
+
+主 yaml 里 `monitor.default.ruleToggles` 列表可以**按目录或文件**禁用 / 启用 rulesDir 下的规则：
+
+```yaml
+monitor:
+  default:
+    rulesDir: ./rules.d
+    ruleToggles:
+      - path: default/command            # 目录前缀：覆盖 default/command/ 下所有 yaml
+        mode: enable
+      - path: default/file               # 关掉整个 default/file/ 子目录
+        mode: disable
+      - path: default/file/keep.yaml     # 但保留这一个具体文件
+        mode: enable
+```
+
+约定：
+- `path` 是**相对 rulesDir** 的路径（用 `/` 分隔，无前导 `/`）
+- `path` 以 `.yaml` / `.yml` 结尾 → 视为文件，精确匹配
+- 否则视为**目录前缀**，覆盖该目录及所有子文件
+- 同一文件多条 toggle 命中时 → **最长 path 胜出**（最具体路径优先；典型用法：关整个目录 + 个别文件挑出来 enable）
+- `mode` 取 `enable` / `disable`，缺省为 `enable`；未知值 WARN 一句、当作 enable 处理
+- 不在列表里的文件 → 默认 enable（零配置 = 全部启用，保持现状）
+
+启动时被关掉的文件会打 `[IAST Agent] Skipped rule file (toggle disable): <relative-path>`，方便 grep 确认。
+
 ⚠️ 历史 inline `monitor.rules:` 已**废弃**：检测到此节存在会 WARN 一句但**不解析**。
 请把规则迁到 rulesDir 指向的目录。
 
