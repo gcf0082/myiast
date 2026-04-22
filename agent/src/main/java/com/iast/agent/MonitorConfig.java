@@ -208,6 +208,10 @@ public class MonitorConfig {
             if (outputConfig.getLogLevel() != null && !outputConfig.getLogLevel().isEmpty()) {
                 LogWriter.getInstance().setLevel(outputConfig.getLogLevel());
             }
+            // 滚动参数：log + jsonl 共用同一对字段
+            LogWriter.getInstance().configure(outputConfig.getMaxFiles(), outputConfig.getMaxFileSizeMb());
+            com.iast.agent.plugin.event.EventWriter.getInstance().configure(
+                    outputConfig.getMaxFiles(), outputConfig.getMaxFileSizeMb());
         }
 
         // 解析全局 default 配置

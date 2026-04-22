@@ -23,6 +23,11 @@ output:
   # instanceName: prod-app1                # 字面量也行
 
   # eventsPath: /tmp/iast-events.jsonl     # 可选全路径覆盖；优先级 > outputDir/instanceName（仅作用 events）
+
+  # 文件滚动：log + jsonl 共用同一策略
+  # maxFiles: 5          # 实例目录下最多保留 N 个文件（含活跃；默认 5）
+  # maxFileSizeMb: 20    # 单文件超过 M MB 后滚动（默认 20MB；≤0 禁用）
+
   logLevel: info             # debug|info|warn|error，默认 info；
                              # 排查"插件没动静 / 响应头丢失 / 监控开关切换异常"等问题时调成 debug，
                              # 也可以通过 CLI `loglevel debug` 运行时切换

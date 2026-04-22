@@ -33,11 +33,20 @@ public class LogWriter {
         LogLevel(int weight) { this.weight = weight; }
     }
 
+    private static final java.time.format.DateTimeFormatter TS_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+                    .withZone(java.time.ZoneOffset.UTC);
+
     private static volatile LogWriter instance;
     private BufferedWriter writer;
     private String logPath;
     private boolean shutdownHookRegistered;
     private static volatile LogLevel currentLevel = LogLevel.INFO;
+
+    // 滚动配置：maxFileSizeMb ≤ 0 禁用；maxFiles 含活跃文件
+    private int maxFiles = 5;
+    private long maxFileBytes = 20L * 1024 * 1024;
+    private long currentFileBytes = 0;
 
     private LogWriter() {
         String pid = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
@@ -96,11 +105,48 @@ public class LogWriter {
         }
     }
 
+    /** 滚动当前文件：close → rename（加时间戳）→ 清理旧文件 → 打开新文件。须在锁内调用。 */
+    private void rollFile() {
+        closeWriter();
+        java.io.File cur = new java.io.File(logPath);
+        if (cur.exists() && cur.length() > 0) {
+            String ts = TS_FMT.format(java.time.Instant.now());
+            String name = cur.getName();
+            int dot = name.lastIndexOf('.');
+            String rolled = (dot < 0)
+                    ? name + "_" + ts
+                    : name.substring(0, dot) + "_" + ts + name.substring(dot);
+            cur.renameTo(new java.io.File(cur.getParent(), rolled));
+        }
+        pruneOldFiles();
+        openWriter();
+        if (writer != null) {
+            write("[INFO] [IAST] log rolled at " + TS_FMT.format(java.time.Instant.now()));
+        }
+    }
+
+    private void pruneOldFiles() {
+        java.io.File dir = new java.io.File(logPath).getParentFile();
+        if (dir == null || !dir.isDirectory()) return;
+        String name = new java.io.File(logPath).getName();
+        int dot = name.lastIndexOf('.');
+        final String prefix = (dot < 0 ? name : name.substring(0, dot)) + "_";
+        final String suffix = (dot < 0 ? "" : name.substring(dot));
+        java.io.File[] old = dir.listFiles((d, n) ->
+                n.startsWith(prefix) && n.endsWith(suffix) && n.length() > prefix.length() + suffix.length());
+        if (old == null) return;
+        int maxRotated = Math.max(0, maxFiles - 1);
+        if (old.length <= maxRotated) return;
+        java.util.Arrays.sort(old, java.util.Comparator.comparing(java.io.File::getName));
+        for (int i = 0; i < old.length - maxRotated; i++) old[i].delete();
+    }
+
     private void openWriter() {
         try {
             java.io.File f = new java.io.File(logPath);
             java.io.File parent = f.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
+            currentFileBytes = f.exists() ? f.length() : 0;
             FileOutputStream fos = new FileOutputStream(logPath, true);
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
             writer = new BufferedWriter(osw);
@@ -119,6 +165,13 @@ public class LogWriter {
             // 关闭异常忽略
         }
         writer = null;
+    }
+
+    /** 设置滚动参数。≤0 的值保留默认。可在 init 前后调用。 */
+    public synchronized void configure(int maxFiles, int maxFileSizeMb) {
+        if (maxFiles > 0) this.maxFiles = maxFiles;
+        if (maxFileSizeMb > 0) this.maxFileBytes = (long) maxFileSizeMb * 1024 * 1024;
+        else if (maxFileSizeMb == 0) this.maxFileBytes = 0; // 0 = 禁用滚动
     }
 
     // ============= 级别控制 =============
@@ -205,9 +258,16 @@ public class LogWriter {
         if (writer == null) return;
         try {
             synchronized (this) {
+                if (maxFileBytes > 0) {
+                    if (currentFileBytes + msg.length() + 1 > maxFileBytes) {
+                        rollFile();
+                    }
+                }
+                if (writer == null) return;  // openWriter 失败时安全降级
                 writer.write(msg);
                 writer.newLine();
                 writer.flush();
+                currentFileBytes += msg.length() + 1;
             }
         } catch (IOException e) {
             // 写入失败静默处理，不影响源进程

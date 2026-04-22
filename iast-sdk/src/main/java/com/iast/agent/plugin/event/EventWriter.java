@@ -10,13 +10,22 @@ import java.nio.charset.StandardCharsets;
 /**
  * 事件日志写入工具（JSONL格式）
  * 与LogWriter分离，每行一个JSON对象，便于下游jq/Filebeat解析
- * 线程安全，零第三方依赖
+ * 线程安全，零第三方依赖，支持按大小滚动
  */
 public class EventWriter {
+    private static final java.time.format.DateTimeFormatter TS_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+                    .withZone(java.time.ZoneOffset.UTC);
+
     private static volatile EventWriter instance;
     private BufferedWriter writer;
     private String eventsPath;
     private boolean shutdownHookRegistered;
+
+    // 滚动配置：maxFileSizeMb ≤ 0 禁用；maxFiles 含活跃文件
+    private int maxFiles = 5;
+    private long maxFileBytes = 20L * 1024 * 1024;
+    private long currentFileBytes = 0;
 
     private EventWriter() {
         String pid = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
@@ -64,6 +73,13 @@ public class EventWriter {
         return eventsPath;
     }
 
+    /** 设置滚动参数。≤0 的值保留默认。可在 init 前后调用。 */
+    public synchronized void configure(int maxFiles, int maxFileSizeMb) {
+        if (maxFiles > 0) this.maxFiles = maxFiles;
+        if (maxFileSizeMb > 0) this.maxFileBytes = (long) maxFileSizeMb * 1024 * 1024;
+        else if (maxFileSizeMb == 0) this.maxFileBytes = 0; // 0 = 禁用滚动
+    }
+
     public synchronized void init() {
         if (writer != null) return;
         openWriter();
@@ -82,12 +98,46 @@ public class EventWriter {
             java.io.File f = new java.io.File(eventsPath);
             java.io.File parent = f.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
+            currentFileBytes = f.exists() ? f.length() : 0;
             FileOutputStream fos = new FileOutputStream(eventsPath, true);
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
             writer = new BufferedWriter(osw);
         } catch (Exception e) {
             writer = null;
         }
+    }
+
+    /** 滚动当前文件：close → rename（加时间戳）→ 清理旧文件 → 打开新文件。须在锁内调用。 */
+    private void rollFile() {
+        closeWriter();
+        java.io.File cur = new java.io.File(eventsPath);
+        if (cur.exists() && cur.length() > 0) {
+            String ts = TS_FMT.format(java.time.Instant.now());
+            String name = cur.getName();                    // "iast.jsonl"
+            int dot = name.lastIndexOf('.');
+            String rolled = (dot < 0)
+                    ? name + "_" + ts
+                    : name.substring(0, dot) + "_" + ts + name.substring(dot); // "iast_20260422143005.jsonl"
+            cur.renameTo(new java.io.File(cur.getParent(), rolled));
+        }
+        pruneOldFiles();
+        openWriter();
+    }
+
+    private void pruneOldFiles() {
+        java.io.File dir = new java.io.File(eventsPath).getParentFile();
+        if (dir == null || !dir.isDirectory()) return;
+        String name = new java.io.File(eventsPath).getName();   // "iast.jsonl"
+        int dot = name.lastIndexOf('.');
+        final String prefix = (dot < 0 ? name : name.substring(0, dot)) + "_"; // "iast_"
+        final String suffix = (dot < 0 ? "" : name.substring(dot));             // ".jsonl"
+        java.io.File[] old = dir.listFiles((d, n) ->
+                n.startsWith(prefix) && n.endsWith(suffix) && n.length() > prefix.length() + suffix.length());
+        if (old == null) return;
+        int maxRotated = Math.max(0, maxFiles - 1);  // 活跃文件占 1 个名额
+        if (old.length <= maxRotated) return;
+        java.util.Arrays.sort(old, java.util.Comparator.comparing(java.io.File::getName));
+        for (int i = 0; i < old.length - maxRotated; i++) old[i].delete();
     }
 
     private void closeWriter() {
@@ -104,9 +154,17 @@ public class EventWriter {
         if (writer == null) return;
         try {
             synchronized (this) {
+                if (maxFileBytes > 0) {
+                    // +1 粗估换行符；ASCII-dominant JSONL 误差极小
+                    if (currentFileBytes + jsonLine.length() + 1 > maxFileBytes) {
+                        rollFile();
+                    }
+                }
+                if (writer == null) return;  // openWriter 失败时安全降级
                 writer.write(jsonLine);
                 writer.newLine();
                 writer.flush();
+                currentFileBytes += jsonLine.length() + 1;
             }
         } catch (IOException e) {
             // 写入失败静默处理

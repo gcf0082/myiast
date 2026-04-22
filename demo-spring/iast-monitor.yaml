@@ -16,6 +16,8 @@ output:
   # 不配 instanceName → 自动用 iast_<pid> 作为子目录名（前缀避免 /tmp 下出现纯数字目录）。
   outputDir: logs
   # instanceName: ${HOSTNAME}      # 想用环境变量做实例名就打开
+  # maxFiles: 5          # 实例目录下最多保留 N 个文件（含活跃；默认 5）
+  # maxFileSizeMb: 20    # 单文件超过 M MB 后滚动（默认 20MB；≤0 禁用）
 
 monitor:
   default:

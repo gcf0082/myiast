@@ -19,6 +19,10 @@ public class OutputConfig {
      *  （env 未设 → WARN + 替换为空串；解析后整串为空 → 兜底 iast_&lt;pid&gt;）。
      *  未配 / 空 → 默认 iast_&lt;pid&gt;（前缀避免 /tmp 下出现纯数字目录）。 */
     private String instanceName;
+    /** 实例目录下最多保留多少个文件（含活跃文件）；≤0 不限。log + jsonl 共用。默认 5。 */
+    private int maxFiles = 5;
+    /** 单个文件最大 MB；超过后滚动；≤0 禁用。log + jsonl 共用。默认 20。 */
+    private int maxFileSizeMb = 20;
 
     public boolean isArgs() {
         return args;
@@ -82,5 +86,21 @@ public class OutputConfig {
 
     public void setInstanceName(String instanceName) {
         this.instanceName = instanceName;
+    }
+
+    public int getMaxFiles() {
+        return maxFiles;
+    }
+
+    public void setMaxFiles(int maxFiles) {
+        this.maxFiles = maxFiles;
+    }
+
+    public int getMaxFileSizeMb() {
+        return maxFileSizeMb;
+    }
+
+    public void setMaxFileSizeMb(int maxFileSizeMb) {
+        this.maxFileSizeMb = maxFileSizeMb;
     }
 }
