@@ -140,11 +140,13 @@ pluginConfig: {...}
 ```
 
 规则目录加载约定：
-- 仅扫一层（不递归子目录）
-- `*.yaml` / `*.yml` 文件按文件名字典序处理
+- **递归扫描所有子目录**——按业务域 / 包名 / 插件分子目录组织都行
+- 不对 `.` 隐藏路径做特殊处理，所有 `*.yaml` / `*.yml` 都加载（含 `.hidden/foo.yaml`）
+- 文件按**相对 rulesDir 的路径**字典序处理（不只是 basename），多次启动顺序稳定
 - 单文件加载失败 WARN+继续，不影响其他文件
-- 启动时每个文件打一行 `[IAST Agent] Loaded N rule(s) from <file>`
-- 每条 rule 打一行 `[IAST Agent] Loaded monitor rule: [id=...] ClassName -> [...] (plugin: ..., from: <file>)`
+- symlink 循环用 canonical-path Set 防住；无读权限的子目录静默跳过
+- 启动时每个文件打一行 `[IAST Agent] Loaded N rule(s) from <relative-path>`
+- 每条 rule 打一行 `[IAST Agent] Loaded monitor rule: [id=...] ClassName -> [...] (plugin: ..., from: <relative-path>)`
 
 ⚠️ 历史 inline `monitor.rules:` 已**废弃**：检测到此节存在会 WARN 一句但**不解析**。
 请把规则迁到 rulesDir 指向的目录。

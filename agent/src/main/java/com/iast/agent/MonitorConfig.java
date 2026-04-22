@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 /**
  * 监控配置管理类
@@ -204,8 +205,10 @@ public class MonitorConfig {
     }
 
     /**
-     * 扫一个目录，加载所有 *.yaml/*.yml 里的规则（multi-doc，用 --- 分割每条规则）。
-     * 文件按文件名字典序处理；某个文件 IO/解析失败会 WARN+继续。
+     * 递归扫一个目录，加载所有 *.yaml/*.yml 里的规则（multi-doc，用 --- 分割每条规则）。
+     * 子目录里的规则也加载，深度无限制（symlink 循环用 canonical-path Set 防住）。
+     * 文件按**相对 rulesDir 的路径**字典序处理；某个文件 IO/解析失败会 WARN+继续。
+     * 不对 `.` 隐藏文件/目录做特殊处理——所有 yaml 都加载。
      */
     private static void loadRulesDir(String absDirPath) {
         File dir = new File(absDirPath);
@@ -217,16 +220,24 @@ public class MonitorConfig {
             LogWriter.getInstance().warn("[IAST Agent] rulesDir is not a directory: " + absDirPath);
             return;
         }
-        File[] files = dir.listFiles((d, name) -> {
-            String low = name.toLowerCase();
-            return low.endsWith(".yaml") || low.endsWith(".yml");
-        });
-        if (files == null || files.length == 0) {
-            LogWriter.getInstance().info("[IAST Agent] rulesDir is empty (no *.yaml/*.yml): " + absDirPath);
+        List<File> files = new ArrayList<>();
+        Set<String> visited = new java.util.HashSet<>();
+        walkRules(dir, files, visited);
+        if (files.isEmpty()) {
+            LogWriter.getInstance().info("[IAST Agent] no *.yaml/*.yml found under " + absDirPath + " (recursive)");
             return;
         }
-        java.util.Arrays.sort(files, (a, b) -> a.getName().compareTo(b.getName()));
+        // 按相对 rulesDir 的路径字典序排，多次启动顺序稳定
+        final String rootCanon;
+        try { rootCanon = dir.getCanonicalPath(); }
+        catch (IOException e) {
+            LogWriter.getInstance().warn("[IAST Agent] cannot canonicalize rulesDir: " + e.getMessage());
+            return;
+        }
+        files.sort((a, b) -> relPath(a, rootCanon).compareTo(relPath(b, rootCanon)));
+
         for (File f : files) {
+            String origin = relPath(f, rootCanon);
             int loaded = 0;
             try (InputStream in = new FileInputStream(f)) {
                 // 用 typed Constructor —— 关键：避免 SnakeYAML 把 `on:`/`yes:`/`no:` 这类 YAML 1.1 关键字
@@ -236,7 +247,7 @@ public class MonitorConfig {
                 for (Object doc : y.loadAll(in)) {
                     if (doc == null) continue;  // 空 doc（典型为文件头/尾的空 ---）
                     if (!(doc instanceof MonitorRuleConfig)) {
-                        LogWriter.getInstance().warn("[IAST Agent] rule doc in " + f.getName()
+                        LogWriter.getInstance().warn("[IAST Agent] rule doc in " + origin
                                 + " is not a rule (got " + doc.getClass().getSimpleName() + "); skip");
                         continue;
                     }
@@ -244,19 +255,53 @@ public class MonitorConfig {
                     if (rule.getClassName() == null || rule.getClassName().isEmpty()
                             || rule.getMethods() == null || rule.getMethods().isEmpty()) {
                         LogWriter.getInstance().warn("[IAST Agent] rule [id=" + rule.getId() + "] in "
-                                + f.getName() + " missing required fields (className/methods); skip");
+                                + origin + " missing required fields (className/methods); skip");
                         continue;
                     }
-                    applyRule(rule, f.getName());
+                    applyRule(rule, origin);
                     loaded++;
                 }
             } catch (Exception e) {
-                LogWriter.getInstance().warn("[IAST Agent] failed to load rules from " + f.getName()
+                LogWriter.getInstance().warn("[IAST Agent] failed to load rules from " + origin
                         + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 continue;
             }
-            LogWriter.getInstance().info("[IAST Agent] Loaded " + loaded + " rule(s) from " + f.getName());
+            LogWriter.getInstance().info("[IAST Agent] Loaded " + loaded + " rule(s) from " + origin);
         }
+    }
+
+    /**
+     * 递归收集 dir 及其所有子目录下的 *.yaml/*.yml 文件到 out。
+     * visited 存 canonical path，防 symlink 死循环；listFiles 拿不到（无权限）就静默跳过。
+     */
+    private static void walkRules(File dir, List<File> out, Set<String> visited) {
+        String canon;
+        try { canon = dir.getCanonicalPath(); }
+        catch (IOException e) { return; }
+        if (!visited.add(canon)) return;
+        File[] entries = dir.listFiles();
+        if (entries == null) return;
+        for (File e : entries) {
+            if (e.isDirectory()) {
+                walkRules(e, out, visited);
+            } else if (e.isFile()) {
+                String low = e.getName().toLowerCase();
+                if (low.endsWith(".yaml") || low.endsWith(".yml")) out.add(e);
+            }
+        }
+    }
+
+    /** 计算 f 相对 rootCanonical 的相对路径（用 / 分隔，跨平台读起来一致）；算不出回退 file 名。 */
+    private static String relPath(File f, String rootCanonical) {
+        try {
+            String fc = f.getCanonicalPath();
+            if (fc.startsWith(rootCanonical)) {
+                String rel = fc.substring(rootCanonical.length());
+                if (rel.startsWith(File.separator)) rel = rel.substring(File.separator.length());
+                return rel.replace(File.separatorChar, '/');
+            }
+        } catch (IOException ignore) {}
+        return f.getName();
     }
 
     /**
