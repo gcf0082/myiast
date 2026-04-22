@@ -14,9 +14,7 @@
 id: filter.file-io-noise
 target: file.io.File
 unless:
+  # value 支持数组（OR 语义）：任一前缀命中即视为真，等价于多条单值谓词的 OR
   - expr: "params[0]"
     op: startsWith
-    value: "/proc/"
-  - expr: "params[0]"
-    op: startsWith
-    value: "/sys/"
+    value: ["/proc/", "/sys/", "/dev/"]
