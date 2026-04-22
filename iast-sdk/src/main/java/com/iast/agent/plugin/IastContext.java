@@ -33,6 +33,9 @@ public final class IastContext {
     private static final ThreadLocal<String> LAST_REQUEST_ID = new ThreadLocal<>();
     private static final ThreadLocal<Integer> DEPTH = ThreadLocal.withInitial(() -> 0);
     private static final ThreadLocal<Map<String, Object>> ATTRIBUTES = new ThreadLocal<>();
+    /** clear() 时把 ATTRIBUTES 拷贝过来；外层 Advice（如 ServletBodyAdvice）的 onExit 在 clear 之后才跑，
+     *  这时通过 {@link #getAttribute} 自动从这里回退取，仍能拿到刚结束那次请求的 attrs。 */
+    private static final ThreadLocal<Map<String, Object>> LAST_ATTRIBUTES = new ThreadLocal<>();
 
     private IastContext() {}
 
@@ -69,6 +72,10 @@ public final class IastContext {
     public static int enter() {
         int d = DEPTH.get() + 1;
         DEPTH.set(d);
+        if (d == 1) {
+            // 新请求开始：清掉上一个请求遗留的 attrs 快照，避免 getAttribute 跨请求误回退
+            LAST_ATTRIBUTES.remove();
+        }
         return d;
     }
 
@@ -98,7 +105,9 @@ public final class IastContext {
         REQUEST_ID.remove();
         DEPTH.remove();
         Map<String, Object> attrs = ATTRIBUTES.get();
-        if (attrs != null) {
+        if (attrs != null && !attrs.isEmpty()) {
+            // 快照供外层 Advice 的 onExit 读取（同 LAST_REQUEST_ID 路径）
+            LAST_ATTRIBUTES.set(new HashMap<>(attrs));
             attrs.clear();
         }
     }
@@ -118,7 +127,13 @@ public final class IastContext {
     public static Object getAttribute(String key) {
         if (key == null) return null;
         Map<String, Object> attrs = ATTRIBUTES.get();
-        return attrs == null ? null : attrs.get(key);
+        if (attrs != null) {
+            Object v = attrs.get(key);
+            if (v != null) return v;
+        }
+        // 回退到 clear() 时的快照——给外层 Advice 的 onExit / Plugin 跨清理读用
+        Map<String, Object> last = LAST_ATTRIBUTES.get();
+        return last == null ? null : last.get(key);
     }
 
     @SuppressWarnings("unchecked")

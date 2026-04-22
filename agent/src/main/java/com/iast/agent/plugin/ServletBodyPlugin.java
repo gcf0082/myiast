@@ -113,6 +113,7 @@ public class ServletBodyPlugin implements IastPlugin {
             if (body == null) {
                 LogWriter.getInstance().info("[ServletBody] [requestId=" + rid + "] "
                         + "<not read by app, Content-Type=" + ct + ", Content-Length=" + totalLength + ">");
+                emitSeekerDebug(rid);
                 return;
             }
 
@@ -130,9 +131,30 @@ public class ServletBodyPlugin implements IastPlugin {
                                     .append(", real total=").append(totalLength).append("]");
 
             LogWriter.getInstance().info(sb.toString());
+            emitSeekerDebug(rid);
         } catch (Throwable t) {
             LogWriter.getInstance().info("[ServletBody] emit failed: " + t);
         }
+    }
+
+    /**
+     * debug 模式下追加一行，回显本请求的 x-seeker 链路追踪头（RequestIdPlugin 入口已经
+     * 捕获到 IastContext attributes，这里只是把它从 attribute 还原回头名打出来）。
+     * 三个值都缺时不打——避免无 trace 的请求每次也多一行 debug 噪音。
+     */
+    private static void emitSeekerDebug(String requestId) {
+        LogWriter lw = LogWriter.getInstance();
+        if (!lw.isDebugEnabled()) return;
+        Object fwdReqId = IastContext.getAttribute(RequestIdPlugin.ATTR_FORWARD_REQ_ID);
+        Object fwdIp    = IastContext.getAttribute(RequestIdPlugin.ATTR_FORWARD_IP);
+        Object xseeker  = IastContext.getAttribute(RequestIdPlugin.ATTR_XSEEKER);
+        if (fwdReqId == null && fwdIp == null && xseeker == null) return;
+        StringBuilder sb = new StringBuilder(96);
+        sb.append("[ServletBody] [requestId=").append(requestId).append("] x-seeker headers:");
+        if (fwdReqId != null) sb.append(" x-seeker-forward-req-id=").append(fwdReqId);
+        if (fwdIp != null)    sb.append(" x-seeker-forward-ip=").append(fwdIp);
+        if (xseeker != null)  sb.append(" xseeker=").append(xseeker);
+        lw.debug(sb.toString());
     }
 
     private static Charset pickCharset(String encoding, String contentType) {
