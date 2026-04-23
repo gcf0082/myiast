@@ -19,6 +19,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *     requestId   → 当前请求跟踪ID
  *     callId      → 本次调用自增ID
  *     className / methodName → 当前拦截的类名/方法名
+ *     context / ctx → 返回 {@link EvalContext}，进一步 .xxx() 可取：
+ *                      pid / hostname / instanceName / agentStartTime /
+ *                      stackTrace / stackTraceClasses /
+ *                      threadId / threadName / phase / duration / enterTime / exitTime /
+ *                      requestId / callId / className / methodName / descriptor
+ *                      例：context.stackTraceClasses / ctx.pid / ctx.hostname
  *   Method: 仅无参方法
  * 任一步异常 → 返回null（每类异常仅记录一次告警）
  * 防重入：求值过程中再次触发表达式执行，嵌套调用直接返回null
@@ -64,12 +70,18 @@ public final class Expression {
         List<String> chain = new ArrayList<>();
         for (int i = 1; i < parts.size(); i++) {
             String seg = parts.get(i);
-            if (!seg.endsWith("()")) {
-                throw new IllegalArgumentException("only no-arg method calls supported: " + seg);
+            // 同时接受 foo() 和 foo 两种写法：
+            //   foo()      —— 传统显式无参方法调用（老用法，向后兼容）
+            //   foo        —— JavaBean 属性简写，运行时按 foo / getFoo / isFoo 顺序查找方法
+            // 这让 "context.pid" / "target.simpleName" 之类的简写能像属性访问一样写。
+            String name;
+            if (seg.endsWith("()")) {
+                name = seg.substring(0, seg.length() - 2).trim();
+            } else {
+                name = seg;
             }
-            String name = seg.substring(0, seg.length() - 2).trim();
             if (name.isEmpty() || !isIdent(name)) {
-                throw new IllegalArgumentException("invalid method name: " + seg);
+                throw new IllegalArgumentException("invalid segment: " + seg);
             }
             chain.add(name);
         }
@@ -133,6 +145,8 @@ public final class Expression {
             case "callId":     return ctx -> ctx.getCallId();
             case "className":  return MethodContext::getClassName;
             case "methodName": return MethodContext::getMethodName;
+            case "context":
+            case "ctx":        return EvalContext::new;
             default:
                 throw new IllegalArgumentException("unsupported root: " + tok);
         }
@@ -192,6 +206,21 @@ public final class Expression {
         // 优先返回"模块可访问"类上声明的Method（JVM按虚方法分派，最终仍调用子类实现）
         // 例：sun.nio.fs.UnixPath.toString() 属于java.base未导出包，直接反射会抛IllegalAccessException
         //     改用java.lang.Object.toString()的Method，invoke时仍会分派到UnixPath的重写
+        // 优先按字面方法名找；找不到再退化到 JavaBean 风格的 getXxx / isXxx，
+        // 这样用户能写 context.pid / target.simpleName 之类的简写，等价于 getPid() / getSimpleName()。
+        Method m = tryFindExact(cls, name);
+        if (m != null) return m;
+        String cap = capitalize(name);
+        if (cap != null) {
+            m = tryFindExact(cls, "get" + cap);
+            if (m != null) return m;
+            m = tryFindExact(cls, "is" + cap);
+            if (m != null) return m;
+        }
+        return null;
+    }
+
+    private static Method tryFindExact(Class<?> cls, String name) {
         Method fallback = null;
         for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
             try {
@@ -215,6 +244,13 @@ public final class Expression {
             }
         }
         return fallback;
+    }
+
+    private static String capitalize(String s) {
+        if (s == null || s.isEmpty()) return null;
+        char c = s.charAt(0);
+        if (!Character.isLowerCase(c)) return null;
+        return Character.toUpperCase(c) + s.substring(1);
     }
 
     private static boolean isModuleAccessible(Class<?> c) {

@@ -1,0 +1,25 @@
+# 示例：按 **调用栈** 维度过滤掉噪音事件。
+# 和 file-io-noise.yaml（按 params[0] 前缀过滤路径）是叠加关系——两条 filter 都挂到同一 rule 时 when/unless 合并。
+#
+# 下面这条 filter 把 stackTraceClasses 里走过日志框架自身实现的调用链全部静默 drop——
+# 日志框架（logback / log4j / jul→slf4j）本身经常 new File / File.exists 去 resolve
+# configuration / rotation 路径，这些不是业务行为、也不是漏洞判定素材。
+#
+# 注意：
+#  - 这里故意用 context.stackTraceClasses 而不是 context.stackTrace。
+#    前者只拼 className、用 | 分隔，contains 命中等价但字符串长度短 60%~80%，
+#    高频 hook 上 CPU 友好。
+#  - 这是示例 / 默认开启。如果实际测试里需要抓"日志框架里的 File.exists"调用，
+#    通过 ruleToggles 关掉这个文件、或直接删除本文件即可。
+
+id: filter.file-io-stack-noise
+target: file.io.File
+unless:
+  # stackTraceClasses 里只要出现任一日志框架的内部包名前缀，就 drop
+  - expr: "context.stackTraceClasses"
+    op: contains
+    value:
+      - "ch.qos.logback."
+      - "org.apache.log4j."
+      - "org.apache.logging.log4j."
+      - "org.slf4j.impl."

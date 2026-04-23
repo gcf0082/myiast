@@ -110,6 +110,9 @@ public class IastAgent {
 
         // 先加载配置，再初始化插件（插件init需要MonitorConfig.getPluginConfigs()返回的聚合配置）
         MonitorConfig.init(agentArgs);
+        // Bind EvalContext 进程级字段给 Expression 的 context.* 读；instanceName 依赖 MonitorConfig 解析完
+        com.iast.agent.plugin.event.EvalContext.bindInstanceName(MonitorConfig.getResolvedInstanceName());
+        com.iast.agent.plugin.event.EvalContext.bindAgentStartTime(START_TIME);
         initPlugins();
 
         // 创建ClassFileLocator，确保ByteBuddy能找到Advice类的字节码
@@ -373,6 +376,8 @@ public class IastAgent {
             }
             LogWriter.getInstance().info("[IAST Agent] reload: re-loading config from " + path);
             MonitorConfig.init("config=" + path);
+            // 可能改了 instanceName，重 bind 一次
+            com.iast.agent.plugin.event.EvalContext.bindInstanceName(MonitorConfig.getResolvedInstanceName());
             initPlugins();
             LogWriter.getInstance().info("[IAST Agent] reload: config + plugins re-initialized");
         } catch (Throwable t) {

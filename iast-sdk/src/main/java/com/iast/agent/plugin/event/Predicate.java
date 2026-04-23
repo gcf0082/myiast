@@ -48,6 +48,16 @@ import java.util.regex.PatternSyntaxException;
  *     op: endsWith
  *     value: [".class", ".jar"]
  *     negate: true
+ *
+ *   # 用 context.* 做调用栈/进程级过滤（stackTraceClasses 比 stackTrace 短得多，
+ *   # 高频 hook 上首选）
+ *   - expr: "context.stackTraceClasses"
+ *     op: contains
+ *     value: ["ch.qos.logback.", "org.apache.log4j."]
+ *
+ *   - expr: "context.hostname"
+ *     op: startsWith
+ *     value: "web-"
  * </pre>
  */
 public final class Predicate {

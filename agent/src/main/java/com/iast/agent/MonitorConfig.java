@@ -56,6 +56,11 @@ public class MonitorConfig {
         return configFilePath;
     }
 
+    /** 当前生效的 instanceName（已做 ${VAR} 展开 + 空兜底）。init() 执行过后才有意义；
+     *  给 EvalContext bind 用，供 Expression 的 context.instanceName 读。 */
+    private static volatile String resolvedInstanceName = "";
+    public static String getResolvedInstanceName() { return resolvedInstanceName; }
+
     // 输出控制选项
     private static boolean outputArgs = true;
     private static boolean outputReturn = true;
@@ -105,8 +110,18 @@ public class MonitorConfig {
         }
 
         try (InputStream is = new FileInputStream(configFile)) {
+            // 清空所有 in-memory 集合，让 reload 回到干净状态。
+            // 这些集合都在 loadConfig / processYamlConfig / loadFiltersDir 里 put / add，
+            // 不清就会 accumulate——典型症状：删除 filter / rule 后 reload，老条目仍在生效。
             monitorRules.clear();
-            
+            classPluginMap.clear();
+            pluginConfigs.clear();
+            classMatchType.clear();
+            classWrapServletRequest.clear();
+            classRuleIds.clear();
+            filterDefs.clear();
+            // ruleToggles 在 processYamlConfig 的 main yaml 解析段里会 clear + 重填，这里保持不动
+
             // 判断配置文件类型：yaml/yml还是properties
             if (configFilePath.toLowerCase().endsWith(".yaml") || configFilePath.toLowerCase().endsWith(".yml")) {
                 // 加载YAML格式配置
@@ -182,6 +197,7 @@ public class MonitorConfig {
                 }
             }
 
+            resolvedInstanceName = resolvedInst;
             File dir = new File(baseDir, resolvedInst);
             if (!dir.exists() && !dir.mkdirs()) {
                 LogWriter.getInstance().warn("[IAST Agent] mkdir failed: "
