@@ -10,9 +10,9 @@ import net.bytebuddy.asm.Advice;
  * 只测耗时 + 成功/失败，把结果转给 {@link MonitorRegistry#report}，由 registry 决定
  * 推到哪个 CLI 会话。
  *
- * <p>{@code @Advice.Origin("#t" / "#m" / "#s")} 拿到的分别是 dotted FQN / 方法名 /
- * JVM 描述符（如 "(I)V"）。这与 IAST 主路径常用的 internal slash 形式不同；MonitorRegistry
- * 内部统一 dotted FQN 匹配。
+ * <p>{@code @Advice.Origin("#t" / "#m" / "#d")} 拿到的分别是 dotted FQN / 方法名 /
+ * JVM 描述符（如 "(Ljava/lang/String;)Ljava/lang/String;"）。{@code #s} 是 Java 风格签名，
+ * 不能用于和 hasDescriptor 输入对比。MonitorRegistry 内部统一 dotted FQN + 原始 JVM 描述符。
  */
 public final class MonitorAdvice {
 
@@ -26,7 +26,7 @@ public final class MonitorAdvice {
     @Advice.OnMethodExit(onThrowable = Throwable.class)
     public static void onExit(@Advice.Origin("#t") String className,
                               @Advice.Origin("#m") String methodName,
-                              @Advice.Origin("#s") String descriptor,
+                              @Advice.Origin("#d") String descriptor,
                               @Advice.Enter long enterNanos,
                               @Advice.Thrown Throwable thrown) {
         try {
