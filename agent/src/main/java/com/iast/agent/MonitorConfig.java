@@ -140,10 +140,19 @@ public class MonitorConfig {
                 addDefaultRule();
             }
         } catch (Exception e) {
-            LogWriter.getInstance().info("[IAST Agent] Failed to load config file: " + e.getMessage());
-            LogWriter.getInstance().info("[IAST Agent] Exception: " + e.toString());
-            // 加载失败用默认配置
-            addDefaultRule();
+            // yaml/properties 解析失败：ERROR + 堆栈；运维排"为什么规则没生效"时必须第一眼看到原因
+            LogWriter.getInstance().error("[IAST Agent] Failed to load config file " + configFilePath
+                    + ": " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
+            // 不加载任何规则——坏配置下"默默给个默认规则挂上"会掩盖问题（业务还以为自己 yaml 生效了）。
+            // 宁可让用户在日志里立刻看到 "rules empty, agent essentially a no-op"，也不沉默兜底。
+            // 清掉可能部分 populate 的 state，确保 agent 不挂任何 advice。
+            monitorRules.clear();
+            classPluginMap.clear();
+            pluginConfigs.clear();
+            classMatchType.clear();
+            classWrapServletRequest.clear();
+            classRuleIds.clear();
+            filterDefs.clear();
         }
     }
 

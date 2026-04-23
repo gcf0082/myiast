@@ -49,10 +49,112 @@ public class LogWriter {
     private long currentFileBytes = 0;
 
     private LogWriter() {
+        // 默认日志文件——真正的"早期阶段日志"落点：yaml 解析尚未完成前的所有 info/warn/error 都在这里。
+        // MonitorConfig.init 成功之后 setLogPath 会把日志切到 outputDir/<instanceName>/iast.log；
+        // 若本文件期间没产生过 ERROR（干净启动），setLogPath 会把它删掉，避免积累。
+        this.logPath = resolveDefaultLogPath();
+        this.bootstrapLogPath = this.logPath;  // 记下初始路径，后续 setLogPath 判断"是否从 bootstrap 切走"时用
+    }
+
+    /** 记下构造时的"早期 bootstrap"文件路径；setLogPath 时判断是否删 bootstrap 文件 */
+    private final String bootstrapLogPath;
+    /** 进程内是否写过 ERROR —— 写过就保留 bootstrap 文件供排错；干净 boot 则删 */
+    private volatile boolean sawErrorBeforeSwitch = false;
+
+    /**
+     * 默认日志路径 resolve，按优先级降级。
+     * <ol>
+     *   <li>agent jar 同目录下的 {@code logs/iast_bootstrap_<pid>.log}
+     *       —— tarball 布局下 jar 与脚本同目录，这是运维最容易翻到的位置</li>
+     *   <li>{@code <cwd>/logs/iast_bootstrap_<pid>.log}
+     *       —— jar 从 bootstrap CL 加载、CodeSource 返回 null 时的兜底</li>
+     *   <li>{@code /tmp/iast_bootstrap_<pid>.log}（flat，不建子目录）
+     *       —— 前两个路径都无写权限时的最后兜底，即使 /tmp 上 mkdir 权限不够也能写</li>
+     * </ol>
+     */
+    private static String resolveDefaultLogPath() {
         String pid = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
-        // 默认布局：/tmp/iast_<pid>/iast.log（前缀 iast_ 避免在 /tmp 下出现纯数字目录）。
-        // yaml 里配 outputDir / instanceName 会通过 setLogPath 切走。
-        this.logPath = "/tmp/iast_" + pid + "/iast.log";
+        String fileName = "iast_bootstrap_" + pid + ".log";
+        java.io.File jarDir = resolveJarDir();
+        if (jarDir != null) {
+            java.io.File logs = new java.io.File(jarDir, "logs");
+            if (ensureDirWritable(logs)) {
+                return new java.io.File(logs, fileName).getAbsolutePath();
+            }
+        }
+        java.io.File cwdLogs = new java.io.File("logs");
+        if (ensureDirWritable(cwdLogs)) {
+            return new java.io.File(cwdLogs, fileName).getAbsolutePath();
+        }
+        return "/tmp/" + fileName;
+    }
+
+    /**
+     * 查找本类所在 jar 的目录。iast-sdk shade 进 iast-agent.jar 的场景下会返回 iast-agent.jar
+     * 的父目录；iast-cli / iast-sdk 独立运行时返回各自 jar 的父目录。
+     *
+     * <p>返回 null 的 case：CodeSource 为 null（少数 JDK 在 bootstrap CL 下的返回）、URI 解析失败。
+     */
+    private static java.io.File resolveJarDir() {
+        // 优先：从本类自身的 resource URL 反推 jar 路径。attach 模式下
+        // ProtectionDomain.getCodeSource() 常被 JDK 置为 null（jdk.attach 的 AgentLoader 实现不
+        // 填 CodeSource location），但 ClassLoader.getResource 仍能拿到 "jar:file:...!/..." 形式 URL，
+        // 比 CodeSource 稳得多。
+        try {
+            String classRes = LogWriter.class.getName().replace('.', '/') + ".class";
+            ClassLoader cl = LogWriter.class.getClassLoader();
+            java.net.URL url = (cl != null) ? cl.getResource(classRes) : ClassLoader.getSystemResource(classRes);
+            if (url != null) {
+                String s = url.toString();
+                if (s.startsWith("jar:file:")) {
+                    int bang = s.indexOf("!");
+                    if (bang > 0) {
+                        String p = java.net.URLDecoder.decode(s.substring("jar:file:".length(), bang),
+                                java.nio.charset.StandardCharsets.UTF_8);
+                        java.io.File f = new java.io.File(p);
+                        if (f.isFile()) return f.getParentFile();
+                    }
+                } else if (s.startsWith("file:")) {
+                    // exploded jar / IDE target/classes 场景
+                    String p = java.net.URLDecoder.decode(s.substring("file:".length()),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    // 剥掉 class 文件本身对应的包路径，得到 classes 根目录
+                    int idx = p.lastIndexOf(classRes);
+                    if (idx > 0) {
+                        java.io.File root = new java.io.File(p.substring(0, idx));
+                        if (root.isDirectory()) return root;
+                    }
+                }
+            }
+        } catch (Throwable ignore) {
+            // null-tolerant
+        }
+        // 再兜底：CodeSource（少数环境 CodeSource 反而能拿到、resource 路径走不通）
+        try {
+            java.security.CodeSource cs = LogWriter.class.getProtectionDomain().getCodeSource();
+            if (cs != null && cs.getLocation() != null) {
+                java.io.File f = new java.io.File(cs.getLocation().toURI());
+                if (f.isFile()) return f.getParentFile();
+                if (f.isDirectory()) return f;
+            }
+        } catch (Throwable ignore) {
+            // null-tolerant
+        }
+        return null;
+    }
+
+    private static boolean ensureDirWritable(java.io.File dir) {
+        try {
+            if (!dir.exists() && !dir.mkdirs()) return false;
+            return dir.isDirectory() && dir.canWrite();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 当前生效的日志文件绝对路径。premain 启动时会 info 这个值，方便运维知道去哪看日志。 */
+    public synchronized String getCurrentLogPath() {
+        return logPath;
     }
 
     public static LogWriter getInstance() {
@@ -86,6 +188,15 @@ public class LogWriter {
             java.io.File of = new java.io.File(old);
             if (of.exists() && of.length() == 0L) of.delete();
         } catch (Throwable ignore) {}
+        // 从 bootstrap 早期文件切走、且期间没出过 ERROR → 配置加载成功、启动干净，
+        // 删掉 bootstrap 文件避免 agent jar 目录下 logs/ 攒一堆只有 5 行 boot info 的空壳
+        // （有 ERROR 的保留供排错）。
+        if (old != null && old.equals(bootstrapLogPath) && !sawErrorBeforeSwitch) {
+            try {
+                java.io.File of = new java.io.File(old);
+                if (of.exists()) of.delete();
+            } catch (Throwable ignore) {}
+        }
         this.logPath = newLogPath;
         openWriter();
         info("[IAST Agent] log path changed: " + old + " -> " + newLogPath);
@@ -236,12 +347,14 @@ public class LogWriter {
     /** ERROR 级别：插件 / Agent 出了真错，需要上线人介入。 */
     public void error(String msg) {
         if (currentLevel.weight > LogLevel.ERROR.weight) return;
+        sawErrorBeforeSwitch = true;
         write("[ERROR] " + msg);
     }
 
     /** ERROR + 异常：把 throwable 的类名 / message / 栈追加到一行 log（多行）。 */
     public void error(String msg, Throwable t) {
         if (currentLevel.weight > LogLevel.ERROR.weight) return;
+        sawErrorBeforeSwitch = true;
         if (t == null) {
             write("[ERROR] " + msg);
             return;

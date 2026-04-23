@@ -48,8 +48,16 @@ public class IastAgent {
     public static void premain(String agentArgs, Instrumentation inst) {
         LogWriter.getInstance().init();
         com.iast.agent.plugin.event.EventWriter.getInstance().init();
+        LogWriter.getInstance().info("[IAST Agent] bootstrap log file: " + LogWriter.getInstance().getCurrentLogPath());
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in pre-agent mode...");
-        startAgent(agentArgs, inst, true);
+        // 顶层兜底：yaml 解析、插件 init、agent jar 定位等早期步骤任何一处抛异常都在这里捕获+记录，
+        // 否则会直接抛回 Java Agent 启动入口，目标 JVM 业务日志里只能看到一个 "Exception in thread main"
+        // 而看不到 agent 自己的失败原因。buildAndInstall 内部已经有自己的 try/catch。
+        try {
+            startAgent(agentArgs, inst, true);
+        } catch (Throwable t) {
+            LogWriter.getInstance().error("[IAST Agent] premain failed (agent NOT installed): " + t, t);
+        }
     }
 
     /**
@@ -58,8 +66,13 @@ public class IastAgent {
     public static void agentmain(String agentArgs, Instrumentation inst) {
         LogWriter.getInstance().init();
         com.iast.agent.plugin.event.EventWriter.getInstance().init();
+        LogWriter.getInstance().info("[IAST Agent] bootstrap log file: " + LogWriter.getInstance().getCurrentLogPath());
         LogWriter.getInstance().info("[IAST Agent] Starting IAST Agent in attach mode...");
-        startAgent(agentArgs, inst, false);
+        try {
+            startAgent(agentArgs, inst, false);
+        } catch (Throwable t) {
+            LogWriter.getInstance().error("[IAST Agent] agentmain failed (agent NOT installed): " + t, t);
+        }
     }
 
     /**

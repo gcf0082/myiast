@@ -124,6 +124,16 @@ CLI 拆在两个模块。**Agent 侧代码**（`agent/src/main/java/com/iast/age
 
 不再写 CLI 端口文件了（agent 不再有自己的监听端口）。这些文件**不会自动清理**——线上请配 logrotate。
 
+### bootstrap 日志
+
+yaml 解析完成 + `setLogPath` 切到最终路径之前的"早期阶段"日志（agent jar 定位、yaml 语法错、outputDir mkdir 失败等）写到 `<agent-jar-dir>/logs/iast_bootstrap_<pid>.log`——tarball 布局下等同 `iast-start.sh` 所在目录。jar 路径 resolve 不到时降级到 `<cwd>/logs/iast_bootstrap_<pid>.log` → `/tmp/iast_bootstrap_<pid>.log`。
+
+`setLogPath` 切走之后：
+- 如果 bootstrap 期间**没有** ERROR（即配置加载成功 + 干净启动）→ 自动删掉 bootstrap 文件，不积累。
+- 如果有 ERROR（yaml 损坏、mkdir 失败等）→ bootstrap 文件保留，运维排错用。
+
+**yaml 损坏的语义**：catch 住异常后**不再**自动加载默认规则兜底（以前会偷偷挂一个 `java.io.File.exists()`）。让日志里直接出现 "monitoring 0 classes"，避免运维以为自己的 yaml 生效了却默默只在拦 File。
+
 ## 重要约定与陷阱
 
 - **YAML 里的 Java 方法描述符** —— 方法按 `"name#descriptor"` 匹配，比如 `"exists#()Z"`、`"<init>#*"` 表示任意构造、`"name#*"` 表示任意签名。`README.md` 末尾有示例表。
