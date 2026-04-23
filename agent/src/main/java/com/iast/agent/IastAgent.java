@@ -11,6 +11,7 @@ import net.bytebuddy.matcher.ElementMatchers;
 
 import java.io.File;
 import java.lang.instrument.Instrumentation;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,6 +29,13 @@ public class IastAgent {
     public static final long START_TIME = System.currentTimeMillis();
     // 保存 Instrumentation 以便 CLI 运行期调用 getAllLoadedClasses（buildAndInstall 之后就没其他地方用）
     public static volatile Instrumentation INSTRUMENTATION;
+
+    // 已安装的 Byte Buddy transformer 引用——attach start 补偿路径需要 reset 后再装。install 失败时留 null。
+    private static volatile net.bytebuddy.agent.builder.ResettableClassFileTransformer INSTALLED_TRANSFORMER;
+    // install 整体成功标记：区分"premain 延迟中还没跑"、"跑了但抛了"、"装成功了"三种状态。
+    private static volatile boolean INSTALL_SUCCEEDED = false;
+    // Advice 字节码定位器——attach start 触发重装时需要复用，不必重新找 agent jar。
+    private static volatile ClassFileLocator ADVICE_LOCATOR;
 
     // 注：历史上这里有 ThreadLocal<MethodContext> currentContext 作为 onEnter→onExit 的上下文通道。
     // 但嵌套 hook 场景（如 Servlet.service 内部再调到子类 service）会让内层 set 覆盖外层，
@@ -72,6 +80,12 @@ public class IastAgent {
                 MONITOR_ENABLED = true;
                 LogWriter.getInstance().info("[IAST Agent] MONITOR_ENABLED " + prev + " -> true (start). "
                         + "Subsequent intercepted calls will dispatch to plugins again.");
+                // attach start 进一步做：重载配置 + 卸旧 transformer 重装 + 补 retransform 漏网类。
+                // 每一步独立 try/catch，best-effort 语义——任何一环失败只 warn，不中断后续。
+                // 注意：必须复用 INSTRUMENTATION（首次 agentmain 时保存），不能用本次调用的 inst 参数——
+                // HotSpot 每次 attach 会 new 出一个 Instrumentation 实现实例，
+                // 用新 inst 调 removeTransformer 找不到老的 ClassFileTransformer。
+                reloadAndRestart(INSTRUMENTATION != null ? INSTRUMENTATION : inst);
             } else {
                 handleCliArg(agentArgs);
             }
@@ -113,6 +127,8 @@ public class IastAgent {
             locator = ClassFileLocator.ForClassLoader.ofSystemLoader();
         }
         final ClassFileLocator adviceLocator = locator;
+        // 存一份给 attach start 补偿路径复用
+        ADVICE_LOCATOR = adviceLocator;
 
         // 决定字节码 install 的时机：premain 模式下默认延迟 1 分钟，避免 retransform + 逐类拦截拖慢业务启动；
         // agentmain 模式总是立即 install（典型场景是对已经跑起来的进程做 hook，没有启动期开销顾虑）。
@@ -186,7 +202,19 @@ public class IastAgent {
      */
     private static void buildAndInstall(Instrumentation inst, ClassFileLocator adviceLocator) {
         LogWriter.getInstance().info("[IAST Agent] Building AgentBuilder and installing transformers...");
+        try {
+            doBuildAndInstall(inst, adviceLocator);
+            INSTALL_SUCCEEDED = true;
+        } catch (Throwable t) {
+            // install 异常整体不上抛，给后续 attach start 留补救机会（此时 INSTALL_SUCCEEDED=false，
+            // reinstallTransformerBestEffort 会识别出"从没装成功过"走直接 buildAndInstall 路径）
+            INSTALL_SUCCEEDED = false;
+            LogWriter.getInstance().error("[IAST Agent] buildAndInstall failed; agent left in uninstalled state. "
+                    + "Use 'attach start' to retry. cause: " + t, t);
+        }
+    }
 
+    private static void doBuildAndInstall(Instrumentation inst, ClassFileLocator adviceLocator) {
         // 构建ByteBuddy Agent
         AgentBuilder agentBuilder = new AgentBuilder.Default()
                 .ignore(ElementMatchers.nameStartsWith("net.bytebuddy."))
@@ -310,10 +338,180 @@ public class IastAgent {
             }
         }
 
-        // 安装Agent
-        agentBuilder.installOn(inst);
+        // 安装Agent（保留 transformer 引用以便后续 reset + 重装）
+        INSTALLED_TRANSFORMER = agentBuilder.installOn(inst);
 
         LogWriter.getInstance().info("[IAST Agent] Agent installed successfully, monitoring " + monitoredClasses.size() + " classes");
+    }
+
+    /**
+     * attach start 的总入口。重载配置 + 卸旧 transformer 重装 + 补 retransform 漏网类。
+     * 每一步独立 try/catch，best-effort 语义：任何一环失败都只 warn 不中断，不能因为 reload 失败反而把已工作的 agent 搞坏。
+     */
+    private static void reloadAndRestart(Instrumentation inst) {
+        if (inst == null) {
+            LogWriter.getInstance().warn("[IAST Agent] reloadAndRestart: instrumentation is null, skipped");
+            return;
+        }
+        reloadConfigBestEffort();
+        reinstallTransformerBestEffort(inst);
+        retransformMissingClasses(inst);
+    }
+
+    /**
+     * 重新解析配置文件 + 重新注册所有插件。
+     * 复用首次 init 时保留的 {@link MonitorConfig#getConfigFilePath()}；注意 MonitorConfig 的 static 集合
+     * 在 {@code init()} 里会 clear + 重填，等价于 in-place reload。
+     * TODO: 现有 5 个内置插件都是纯内存，重入 init 没问题；若将来有插件持有 I/O 资源，这里需要先 close 老实例。
+     */
+    private static void reloadConfigBestEffort() {
+        try {
+            String path = MonitorConfig.getConfigFilePath();
+            if (path == null || path.isEmpty()) {
+                LogWriter.getInstance().warn("[IAST Agent] reload: configFilePath is empty, skipping config reload");
+                return;
+            }
+            LogWriter.getInstance().info("[IAST Agent] reload: re-loading config from " + path);
+            MonitorConfig.init("config=" + path);
+            initPlugins();
+            LogWriter.getInstance().info("[IAST Agent] reload: config + plugins re-initialized");
+        } catch (Throwable t) {
+            // MonitorConfig.loadFromYaml 异常会让 static 集合处于半清空状态（已知问题），但不在本次范围内修
+            LogWriter.getInstance().error("[IAST Agent] reload: config reload failed (agent may be in partial state): " + t, t);
+        }
+    }
+
+    /**
+     * 卸掉老 transformer、按最新配置重新 buildAndInstall。
+     * - INSTALL_SUCCEEDED=false（从未装成功，或 premain 延迟中还没跑）：直接 buildAndInstall，不需要 reset。
+     * - INSTALL_SUCCEEDED=true：先 reset 撤销已注入的 advice（Byte Buddy 会 retransform 所有原记录类回到原字节码
+     *   并从 JVM 摘下 transformer），再 buildAndInstall 重建。这样 reload 后新增的 rule 能生效、删掉的 rule 也能彻底下线。
+     */
+    private static void reinstallTransformerBestEffort(Instrumentation inst) {
+        try {
+            if (ADVICE_LOCATOR == null) {
+                LogWriter.getInstance().warn("[IAST Agent] reinstall: ADVICE_LOCATOR is null (startAgent never completed), skipping");
+                return;
+            }
+            if (INSTALL_SUCCEEDED && INSTALLED_TRANSFORMER != null) {
+                int prevSize = TransformedClasses.getInstance().snapshotTransformed().size();
+                LogWriter.getInstance().info("[IAST Agent] reinstall: resetting old transformer (~" + prevSize + " classes to revert)");
+                try {
+                    boolean resetOk = INSTALLED_TRANSFORMER.reset(inst, AgentBuilder.RedefinitionStrategy.RETRANSFORMATION);
+                    if (!resetOk) {
+                        // 兜底：直接调 Instrumentation.removeTransformer 摘掉老 transformer
+                        boolean removed = inst.removeTransformer(INSTALLED_TRANSFORMER);
+                        LogWriter.getInstance().warn("[IAST Agent] reinstall: reset returned false; fallback removeTransformer=" + removed);
+                    }
+                } catch (Throwable rt) {
+                    LogWriter.getInstance().warn("[IAST Agent] reinstall: reset threw, continuing with re-install: " + rt);
+                }
+                INSTALLED_TRANSFORMER = null;
+                INSTALL_SUCCEEDED = false;
+            } else {
+                LogWriter.getInstance().info("[IAST Agent] reinstall: no prior successful install to reset (INSTALL_SUCCEEDED=" + INSTALL_SUCCEEDED + ")");
+            }
+            buildAndInstall(inst, ADVICE_LOCATOR);
+        } catch (Throwable t) {
+            LogWriter.getInstance().error("[IAST Agent] reinstall: failed: " + t, t);
+        }
+    }
+
+    /**
+     * safety net：遍历当前所有已加载类，对"规则覆盖但未出现在 TransformedClasses 里"的类调 retransformClasses。
+     * 正常情况下 {@link #reinstallTransformerBestEffort} 里新 transformer 的 RETRANSFORMATION 策略已经覆盖了；
+     * 这里只在 install 过程中个别类被 onError 吞掉时起作用。
+     */
+    private static void retransformMissingClasses(Instrumentation inst) {
+        try {
+            java.util.Set<String> alreadyTransformed = TransformedClasses.getInstance().snapshotTransformed().keySet();
+            List<String> monitoredInternal = MonitorConfig.getMonitoredClasses();
+            if (monitoredInternal.isEmpty()) {
+                return;
+            }
+            // exact 规则的目标 FQCN 集合
+            java.util.Set<String> exactTargets = new HashSet<>();
+            // interface 规则的目标 FQCN 集合——对每个 loaded class 要走 supertype 判断
+            java.util.Set<String> interfaceTargets = new HashSet<>();
+            for (String internal : monitoredInternal) {
+                String fqcn = internal.replace('/', '.');
+                if ("interface".equals(MonitorConfig.getMatchType(internal))) {
+                    interfaceTargets.add(fqcn);
+                } else {
+                    exactTargets.add(fqcn);
+                }
+            }
+
+            List<Class<?>> candidates = new ArrayList<>();
+            Class<?>[] all = inst.getAllLoadedClasses();
+            for (Class<?> c : all) {
+                if (c == null) continue;
+                String name = c.getName();
+                if (alreadyTransformed.contains(name)) continue;
+                if (c.isInterface()) continue;  // 接口本身不 hook
+                if (!inst.isModifiableClass(c)) continue;
+                boolean match = exactTargets.contains(name);
+                if (!match && !interfaceTargets.isEmpty()) {
+                    // 走 hasSuperType 语义：遍历 supertype 名称链
+                    if (hasSupertypeInSet(c, interfaceTargets)) {
+                        match = true;
+                    }
+                }
+                if (match) {
+                    candidates.add(c);
+                }
+            }
+            if (candidates.isEmpty()) {
+                LogWriter.getInstance().info("[IAST Agent] retransform missing: none found");
+                return;
+            }
+            LogWriter.getInstance().info("[IAST Agent] retransform missing: " + candidates.size() + " candidate class(es)");
+            // 分批 retransform，单 batch 失败不影响其他 batch
+            final int BATCH = 100;
+            int okBatches = 0, failBatches = 0;
+            for (int i = 0; i < candidates.size(); i += BATCH) {
+                int end = Math.min(i + BATCH, candidates.size());
+                Class<?>[] batch = candidates.subList(i, end).toArray(new Class<?>[0]);
+                try {
+                    inst.retransformClasses(batch);
+                    okBatches++;
+                } catch (Throwable t) {
+                    failBatches++;
+                    LogWriter.getInstance().warn("[IAST Agent] retransform batch [" + i + "," + end + ") failed: " + t);
+                }
+            }
+            LogWriter.getInstance().info("[IAST Agent] retransform missing done: ok=" + okBatches + " fail=" + failBatches);
+        } catch (Throwable t) {
+            LogWriter.getInstance().error("[IAST Agent] retransform missing: unexpected failure: " + t, t);
+        }
+    }
+
+    /**
+     * 判断 c 的 supertype 链（superclass + interfaces，递归）里是否有 FQCN 在 set 里。
+     * 不走 Class.forName / isAssignableFrom 避免 classloader 跨层加载——按 name 字符串匹配足够。
+     */
+    private static boolean hasSupertypeInSet(Class<?> c, java.util.Set<String> targetNames) {
+        Class<?> sc = c.getSuperclass();
+        while (sc != null) {
+            if (targetNames.contains(sc.getName())) return true;
+            sc = sc.getSuperclass();
+        }
+        // 广度优先遍历所有直接 + 间接接口
+        java.util.Deque<Class<?>> stack = new java.util.ArrayDeque<>();
+        for (Class<?> i : c.getInterfaces()) stack.push(i);
+        Class<?> scIter = c.getSuperclass();
+        while (scIter != null) {
+            for (Class<?> i : scIter.getInterfaces()) stack.push(i);
+            scIter = scIter.getSuperclass();
+        }
+        java.util.Set<Class<?>> visited = new HashSet<>();
+        while (!stack.isEmpty()) {
+            Class<?> iface = stack.pop();
+            if (!visited.add(iface)) continue;
+            if (targetNames.contains(iface.getName())) return true;
+            for (Class<?> parent : iface.getInterfaces()) stack.push(parent);
+        }
+        return false;
     }
 
     /**
