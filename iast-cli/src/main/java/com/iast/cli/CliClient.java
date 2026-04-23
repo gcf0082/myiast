@@ -66,8 +66,10 @@ public final class CliClient {
         System.err.println("Usage:");
         System.err.println("  java -jar iast-cli.jar listen [host] [port]   # wait for agent to dial in");
         System.err.println("                             [--port-file <path>]");
+        System.err.println("                             [--command \"<cmd>\"]   # non-interactive: send one cmd, stream until Ctrl-C");
         System.err.println("  java -jar iast-cli.jar freeport               # print a free 127.0.0.1 port");
         System.err.println("  java -jar iast-cli.jar connect <host> <port>  # (advanced) dial a legacy WS server");
+        System.err.println("                             [--command \"<cmd>\"]");
         System.exit(2);
     }
 
@@ -83,11 +85,14 @@ public final class CliClient {
         String host = "127.0.0.1";
         int port = 0;
         String portFile = null;
+        String oneShotCmd = null;
         int posIdx = 0;
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if ("--port-file".equals(a) && i + 1 < args.length) {
                 portFile = args[++i];
+            } else if ("--command".equals(a) && i + 1 < args.length) {
+                oneShotCmd = args[++i];
             } else if (posIdx == 0) {
                 host = a; posIdx++;
             } else if (posIdx == 1) {
@@ -111,7 +116,11 @@ public final class CliClient {
                 DataInputStream in = new DataInputStream(sock.getInputStream());
                 OutputStream out = sock.getOutputStream();
                 if (!doServerHandshake(in, out)) return;
-                runRepl(in, out, /*isServer=*/true);
+                if (oneShotCmd != null) {
+                    runCommandMode(sock, in, out, /*isServer=*/true, oneShotCmd);
+                } else {
+                    runRepl(in, out, /*isServer=*/true);
+                }
             }
         }
     }
@@ -129,23 +138,90 @@ public final class CliClient {
 
     private static void runConnect(String[] args) throws Exception {
         if (args.length < 1) {
-            System.err.println("Usage: connect <host> <port>  (or: connect <port>)");
+            System.err.println("Usage: connect <host> <port>  (or: connect <port>) [--command \"<cmd>\"]");
             System.exit(2);
         }
-        String host;
-        int port;
-        if (args.length == 1) {
+        String host = null;
+        int port = -1;
+        String oneShotCmd = null;
+        int posIdx = 0;
+        for (int i = 0; i < args.length; i++) {
+            String a = args[i];
+            if ("--command".equals(a) && i + 1 < args.length) {
+                oneShotCmd = args[++i];
+            } else if (posIdx == 0) {
+                host = a; posIdx++;
+            } else if (posIdx == 1) {
+                port = Integer.parseInt(a); posIdx++;
+            }
+        }
+        if (port < 0 && host != null && posIdx == 1) {
+            // 单参数 = 端口号；host 默认 127.0.0.1
+            port = Integer.parseInt(host);
             host = "127.0.0.1";
-            port = Integer.parseInt(args[0]);
-        } else {
-            host = args[0];
-            port = Integer.parseInt(args[1]);
+        }
+        if (host == null || port < 0) {
+            System.err.println("Usage: connect <host> <port>  (or: connect <port>) [--command \"<cmd>\"]");
+            System.exit(2);
         }
         try (Socket sock = new Socket(host, port)) {
             DataInputStream in = new DataInputStream(sock.getInputStream());
             OutputStream out = sock.getOutputStream();
             doClientHandshake(in, out, host, port);
-            runRepl(in, out, /*isServer=*/false);
+            if (oneShotCmd != null) {
+                runCommandMode(sock, in, out, /*isServer=*/false, oneShotCmd);
+            } else {
+                runRepl(in, out, /*isServer=*/false);
+            }
+        }
+    }
+
+    // ---------- 非交互模式（--command "<cmd>"）：送一条命令、流式打印响应、Ctrl-C 退出 ----------
+
+    /**
+     * 非交互模式：握手完成后立即送 {@code oneShotCmd} 一条文本帧，转入纯读循环把每一帧
+     * 直接 {@link System#out} 输出。退出条件：对端关连接 / 用户 Ctrl-C（shutdown hook 兜底）。
+     *
+     * <p>主要给 {@code monitor} 命令用——agent 装好 advice 后会持续推帧，CLI 充当尾随屏。
+     * 一次性命令（status / rules / ...）也能跑，但会停在那等下一帧；用户按 Ctrl-C 退即可。
+     */
+    private static void runCommandMode(Socket sock, DataInputStream in, OutputStream out,
+                                       boolean isServer, String oneShotCmd) throws Exception {
+        // SIGINT / SIGTERM 时尽量优雅地告别再退；shutdown hook 上限 200ms，超了直接走
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                if (!sock.isClosed()) {
+                    WsFrame.writeClose(out, 1000, "bye", isServer ? false : true);
+                }
+            } catch (Throwable ignore) {}
+            try { sock.close(); } catch (Throwable ignore) {}
+        }, "iast-cli-shutdown"));
+
+        try {
+            writeText(out, isServer, oneShotCmd);
+        } catch (IOException e) {
+            System.err.println("[send failed: " + e.getMessage() + "]");
+            return;
+        }
+
+        // expectMasked: listen 模式下对端是 WS client（必须 mask）；connect 模式下对端是 WS server（不能 mask）
+        boolean expectMasked = isServer;
+        try {
+            while (true) {
+                WsFrame.Frame f = WsFrame.read(in, expectMasked);
+                if (f == null) {
+                    return;
+                }
+                if (f.opcode == WsFrame.OP_TEXT) {
+                    System.out.println(f.text());
+                    System.out.flush();
+                } else if (f.opcode == WsFrame.OP_CLOSE) {
+                    return;
+                }
+                // ping/pong/binary 一律忽略
+            }
+        } catch (IOException e) {
+            // socket 断开退出（含 Ctrl-C 触发的 shutdown hook close）
         }
     }
 

@@ -34,9 +34,10 @@ final class CliHandler {
 
     /**
      * 执行一条命令。返回要回显给客户端的整段文本（可能多行）；若返回 "__QUIT__" 则表示
-     * server 应该关连接。
+     * server 应该关连接。{@code sc} 由 CliServer 注入，仅 {@code monitor} 命令用到（拿
+     * 当前会话的 SessionWriter 推帧）。
      */
-    static String execute(String line) {
+    static String execute(String line, com.iast.agent.cli.MonitorRegistry.SessionContext sc) {
         if (line == null) return "";
         String cmd = line.trim();
         if (cmd.isEmpty()) return "";
@@ -52,6 +53,7 @@ final class CliHandler {
                 case "classes": return classes(arg);
                 case "transformed": return transformed(arg);
                 case "methods": return methods(arg);
+                case "monitor": return monitor(arg, sc);
                 case "enable":  return toggleMonitor(true);
                 case "disable": return toggleMonitor(false);
                 case "loglevel": return loglevel(arg);
@@ -74,10 +76,53 @@ final class CliHandler {
                 "  classes <pattern>    grep loaded classes. use 're:<regex>' for regex",
                 "  transformed [<pat>]  list classes Byte Buddy has woven advice into (use 're:<regex>')",
                 "  methods <class> [name] [all]  print JVM descriptors of a class's methods (YAML-ready)",
+                "  monitor <fqcn> <method>[#<desc>]  ad-hoc per-call trace, independent of YAML rules",
+                "                       (recommended via: iast-cli-jattach.sh <pid> --command \"monitor X Y\")",
                 "  enable               turn monitor ON (MONITOR_ENABLED=true)",
                 "  disable              turn monitor OFF (MONITOR_ENABLED=false)",
                 "  loglevel [<level>]   show or set log level (debug/info/warn/error)",
                 "  quit / exit          close this session");
+    }
+
+    /**
+     * {@code monitor <fqcn> <methodName>[#<descriptor>]} —— 给指定方法装一段 stats-only advice，
+     * 每次拦截推一行到本会话 stdout。一次会话最多 1 个 monitor；CLI 断开自动撤销。
+     *
+     * <p>命令本身只是 ack（"installed" 或 "ERROR ..."）；后续命中的真正流式输出由
+     * {@link MonitorRegistry#report} 直接调本会话的 {@link SessionWriter} 推帧。
+     */
+    private static String monitor(String arg, com.iast.agent.cli.MonitorRegistry.SessionContext sc) {
+        if (sc == null) {
+            return "ERROR: monitor requires an active session";
+        }
+        if (arg.isEmpty()) {
+            return "usage: monitor <fqcn> <methodName>[#<descriptor>]\n"
+                    + "  e.g. monitor com.foo.Bar doSomething\n"
+                    + "       monitor com.foo.Bar doSomething#(Ljava/lang/String;)V";
+        }
+        String[] tokens = arg.split("\\s+", 2);
+        if (tokens.length < 2) {
+            return "usage: monitor <fqcn> <methodName>[#<descriptor>]";
+        }
+        String fqcn = tokens[0].replace('/', '.');
+        String methodSpec = tokens[1].trim();
+        String methodName;
+        String descriptor = null;
+        int hash = methodSpec.indexOf('#');
+        if (hash < 0) {
+            methodName = methodSpec;
+        } else {
+            methodName = methodSpec.substring(0, hash);
+            descriptor = methodSpec.substring(hash + 1);
+            if (descriptor.isEmpty()) descriptor = null;
+        }
+        if (methodName.isEmpty()) {
+            return "ERROR: empty method name";
+        }
+        if ("<init>".equals(methodName)) {
+            return "ERROR: constructor monitoring (<init>) not supported in v1";
+        }
+        return MonitorRegistry.installMonitor(sc, fqcn, methodName, descriptor);
     }
 
     /**

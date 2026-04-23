@@ -130,31 +130,38 @@ public final class CliServer {
     }
 
     private static void sessionLoop(Socket sock, DataInputStream in, OutputStream out) throws IOException {
-        while (!sock.isClosed()) {
-            // expectMasked=false：CLI 现在是 WS server，它发来的帧 *不得* mask
-            WsFrame.Frame f = WsFrame.read(in, false);
-            if (f == null) break;
-            switch (f.opcode) {
-                case WsFrame.OP_TEXT:
-                    String cmd = f.text();
-                    String resp = CliHandler.execute(cmd);
-                    if ("__QUIT__".equals(resp)) {
-                        WsFrame.writeClientText(out, "bye");
-                        WsFrame.writeClose(out, 1000, "bye", true);
+        // 整个会话注册到 MonitorRegistry：CLI 命令应答 + monitor advice 推帧共用同一 SessionWriter
+        // （内部 synchronized(out) 串行所有 WS 帧）。finally 兜底撤 monitor + close writer。
+        MonitorRegistry.SessionContext sc = MonitorRegistry.openSession(out);
+        try {
+            while (!sock.isClosed()) {
+                // expectMasked=false：CLI 现在是 WS server，它发来的帧 *不得* mask
+                WsFrame.Frame f = WsFrame.read(in, false);
+                if (f == null) break;
+                switch (f.opcode) {
+                    case WsFrame.OP_TEXT:
+                        String cmd = f.text();
+                        String resp = CliHandler.execute(cmd, sc);
+                        if ("__QUIT__".equals(resp)) {
+                            sc.getWriter().writeText("bye");
+                            sc.getWriter().writeClose(1000, "bye");
+                            return;
+                        }
+                        sc.getWriter().writeText(resp);
+                        break;
+                    case WsFrame.OP_PING:
+                        WsFrame.writeClientPong(out, f.payload);
+                        break;
+                    case WsFrame.OP_CLOSE:
+                        sc.getWriter().writeClose(1000, "bye");
                         return;
-                    }
-                    WsFrame.writeClientText(out, resp);
-                    break;
-                case WsFrame.OP_PING:
-                    WsFrame.writeClientPong(out, f.payload);
-                    break;
-                case WsFrame.OP_CLOSE:
-                    WsFrame.writeClose(out, 1000, "bye", true);
-                    return;
-                default:
-                    // 忽略 pong / continuation / binary
-                    break;
+                    default:
+                        // 忽略 pong / continuation / binary
+                        break;
+                }
             }
+        } finally {
+            MonitorRegistry.closeSession(sc);
         }
     }
 

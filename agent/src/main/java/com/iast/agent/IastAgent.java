@@ -28,6 +28,9 @@ public class IastAgent {
     public static final long START_TIME = System.currentTimeMillis();
     // 保存 Instrumentation 以便 CLI 运行期调用 getAllLoadedClasses（buildAndInstall 之后就没其他地方用）
     public static volatile Instrumentation INSTRUMENTATION;
+    // 保存 ClassFileLocator，给 CLI monitor 命令运行期 Advice.to(..., ADVICE_LOCATOR) 用
+    // —— 跟主 buildAndInstall 用同一个 locator，能定位 fat jar 里 shaded 的 advice 类字节码
+    public static volatile ClassFileLocator ADVICE_LOCATOR;
 
     // 注：历史上这里有 ThreadLocal<MethodContext> currentContext 作为 onEnter→onExit 的上下文通道。
     // 但嵌套 hook 场景（如 Servlet.service 内部再调到子类 service）会让内层 set 覆盖外层，
@@ -113,6 +116,7 @@ public class IastAgent {
             locator = ClassFileLocator.ForClassLoader.ofSystemLoader();
         }
         final ClassFileLocator adviceLocator = locator;
+        ADVICE_LOCATOR = adviceLocator;
 
         // 决定字节码 install 的时机：premain 模式下默认延迟 1 分钟，避免 retransform + 逐类拦截拖慢业务启动；
         // agentmain 模式总是立即 install（典型场景是对已经跑起来的进程做 hook，没有启动期开销顾虑）。
