@@ -49,17 +49,11 @@ public class LogWriter {
     private long currentFileBytes = 0;
 
     private LogWriter() {
-        // 默认日志文件——真正的"早期阶段日志"落点：yaml 解析尚未完成前的所有 info/warn/error 都在这里。
-        // MonitorConfig.init 成功之后 setLogPath 会把日志切到 outputDir/<instanceName>/iast.log；
-        // 若本文件期间没产生过 ERROR（干净启动），setLogPath 会把它删掉，避免积累。
+        // 默认日志文件——"早期阶段日志"落点：yaml 解析尚未完成前的所有 info/warn/error 都在这里。
+        // MonitorConfig.init 成功之后 setLogPath 会把后续日志切到 outputDir/<instanceName>/iast.log，
+        // 但本早期文件作为 boot 过程审计记录**始终保留**，不做自动清理。
         this.logPath = resolveDefaultLogPath();
-        this.bootstrapLogPath = this.logPath;  // 记下初始路径，后续 setLogPath 判断"是否从 bootstrap 切走"时用
     }
-
-    /** 记下构造时的"早期 bootstrap"文件路径；setLogPath 时判断是否删 bootstrap 文件 */
-    private final String bootstrapLogPath;
-    /** 进程内是否写过 ERROR —— 写过就保留 bootstrap 文件供排错；干净 boot 则删 */
-    private volatile boolean sawErrorBeforeSwitch = false;
 
     /**
      * 默认日志路径 resolve，按优先级降级。
@@ -188,15 +182,9 @@ public class LogWriter {
             java.io.File of = new java.io.File(old);
             if (of.exists() && of.length() == 0L) of.delete();
         } catch (Throwable ignore) {}
-        // 从 bootstrap 早期文件切走、且期间没出过 ERROR → 配置加载成功、启动干净，
-        // 删掉 bootstrap 文件避免 agent jar 目录下 logs/ 攒一堆只有 5 行 boot info 的空壳
-        // （有 ERROR 的保留供排错）。
-        if (old != null && old.equals(bootstrapLogPath) && !sawErrorBeforeSwitch) {
-            try {
-                java.io.File of = new java.io.File(old);
-                if (of.exists()) of.delete();
-            } catch (Throwable ignore) {}
-        }
+        // bootstrap 文件保留：即使干净启动也不删。设计上 bootstrap log 记录了 agent jar 定位、
+        // classpath append、yaml 路径 resolve 等早期步骤的完整审计记录，和最终 iast.log 是
+        // 两份不同的文件，运维升级 / 换机 / 回放 boot 过程时有用；不值得自动清理省一点磁盘。
         this.logPath = newLogPath;
         openWriter();
         info("[IAST Agent] log path changed: " + old + " -> " + newLogPath);
@@ -347,14 +335,12 @@ public class LogWriter {
     /** ERROR 级别：插件 / Agent 出了真错，需要上线人介入。 */
     public void error(String msg) {
         if (currentLevel.weight > LogLevel.ERROR.weight) return;
-        sawErrorBeforeSwitch = true;
         write("[ERROR] " + msg);
     }
 
     /** ERROR + 异常：把 throwable 的类名 / message / 栈追加到一行 log（多行）。 */
     public void error(String msg, Throwable t) {
         if (currentLevel.weight > LogLevel.ERROR.weight) return;
-        sawErrorBeforeSwitch = true;
         if (t == null) {
             write("[ERROR] " + msg);
             return;
